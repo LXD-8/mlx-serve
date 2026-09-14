@@ -307,8 +307,9 @@ fn printUsage(io: std.Io) void {
         \\                        MLX engine and ignore this flag. For
         \\                        GGUF: `auto` (default) reads the file's
         \\                        `general.architecture` metadata and routes
-        \\                        deepseek4 + ds4-MLA quants to the embedded
-        \\                        ds4 engine, everything else to llama.cpp.
+        \\                        ds4-converted quants (DeepSeek V4/V4.1, Qwen3.8
+        \\                        Flash Next, GLM 5.x) to the embedded ds4
+        \\                        engine, everything else to llama.cpp.
         \\                        Override when auto-detection is wrong
         \\                        (e.g. an unusual ds4 quant whose metadata
         \\                        layout differs).
@@ -1599,7 +1600,8 @@ const logResolveGgufError = model_discovery.logResolveGgufError;
 ///
 /// Priority: explicit `--engine` override wins. Otherwise we read the file's
 /// GGUF metadata (cheap, header-only) and route on `general.architecture`:
-/// `deepseek4` + the antirez-style MLA key → ds4; everything else → llama.cpp.
+/// `deepseek4` + the antirez-style MLA key, or a ds4-only arch (V4.1, Qwen3.8
+/// Flash Next, GLM 5.x) → ds4; everything else → llama.cpp.
 /// Issue #15 — the previous basename heuristic mis-routed two real-world
 /// files; see `src/gguf_meta.zig` for the rule.
 ///
@@ -1675,6 +1677,7 @@ fn runDs4Offline(
         .mtp_draft_tokens = if (mtp_path != null) 4 else 0,
         .mtp_margin = 3.0,
         .dspark = ds4_dspark,
+        .embedded_mtp = ds4_mtp and !ds4_ssd_streaming and ds4_arch.ggufDeclaresEmbeddedMtp(io, allocator, gguf_path),
     }) catch |err| {
         log.err("[ds4] engine open failed: {s}\n", .{@errorName(err)});
         return err;

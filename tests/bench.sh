@@ -69,7 +69,7 @@ QWEN38_27B="$MD/ddalcu/Qwen3.8-27B-MLX-Serve-4bit"
 TARGETS=(
     "gemma4-e4b-4bit|$MD/mlx-community/gemma-4-e4b-it-4bit"
     "gemma4-26b-a4b-moe-qat-4bit|$LMS_DIR/mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-    "qwen36-35b-a3b|$GD/models/ddalcu/Qwen3.6-35B-A3B-MLX-Serve-4bit"
+    "qwen36-35b-a3b|$GD/models-dl/ddalcu/Qwen3.6-35B-A3B-MLX-Serve-4bit"
     "qwen38-27b|$QWEN38_27B"
     "qwen38-flash-next|$MD/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit"
 )

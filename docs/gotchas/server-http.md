@@ -2123,3 +2123,26 @@ Fix: `json_grammar` counts consecutive free-whitespace bytes (`ws_run`, carried 
 snapshots) and rejects past `MAX_FREE_WS` (16) between tokens and after the root, so
 the mask forces the next structural byte. Content is never constrained by it, only
 formatting. Guard: `free whitespace is capped so a masked model cannot idle forever`.
+
+## ds4 sessions were per request; embeddings segfaulted on an engine-backed model (2026-09-14)
+
+llmprobe against Qwen3.8-Flash-Next-Q2 through the embedded ds4 engine died with a
+bare `Killed: 9` a few minutes in, no crash report, at a different request each run.
+It was memory: `runPrefillDs4` created a fresh `ds4_session` per request and freed it
+in `Slot.deinit`, and at `--ctx-size 131072` each session is ~13 GB of context
+buffers. With `--max-concurrent 4` the concurrent phases of the suite held four of
+them (RSS 41 → 97 GB, free RAM 0.07 GB) until the kernel killed the process. The
+per-request session also meant ds4's own prompt-prefix reuse never fired
+(`cached_n=0` on every request).
+
+Fix: one persistent `LoadedModel.ds4_session`, created on first prefill, freed with
+the engine, driven by one slot at a time through the same `session_busy` claim the
+llama engine uses in `Scheduler.submit`/`complete`. Sync errors invalidate it so the
+next request rebuilds cold. A repeated prompt now reports the reused prefix.
+
+With that fixed the run reached `POST /v1/embeddings`, and `runEmbedRequest`
+unwrapped the null MLX transformer (ReleaseFast: SIGSEGV). `handleEmbeddings` now
+refuses engine-backed models by name before anything is queued.
+
+Guard: `tests/test_ds4_serve.sh` (repeat prompt reports `cached_tokens` > 0;
+embeddings return a named 400 and the server stays up).

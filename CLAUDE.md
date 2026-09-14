@@ -115,7 +115,7 @@ Hermetic suites: `zig build test -Dtest-filter="format corpus"`, `-Dtest-filter=
 
 ## Supported architectures
 
-Dispatch on `config.json` `model_type`. GGUF bypasses MLX → embedded engine by header (`gguf_meta.preferredEngine`: antirez DSV4-Flash → ds4, else llama.cpp).
+Dispatch on `config.json` `model_type`. GGUF bypasses MLX → embedded engine by header (`gguf_meta.preferredEngine`: antirez DSV4-Flash + the ds4-only archs `deepseek41`/`qwen4exp`/`glm-dsa`/`glm5-next` → ds4, else llama.cpp).
 
 | model_type | Notes |
 |---|---|
@@ -329,6 +329,9 @@ With `tools`, tokens buffer for detection (all tag families + raw JSON); thinkin
 - **A READY model never advertises LESS capability than its stub** (`readyHasChat` counts embedded engines; app `lanAdvertises` tolerates empty caps).
 - **Default bind is 0.0.0.0 and serve mode WARNS** (`server.shouldWarnOpenBind`); flips to 127.0.0.1 in a future release. The app always passes `--host` explicitly.
 - **A reload FREES the CPU state `unloadResident` retains, so the registry mutex alone does not make a read of it safe**: `config`/`chat_config`/`tokenizer`/`token_bytes`/`tokenize_cache` are freed off-mutex while the entry is `.loading` (`releaseRetainedCpuState`, asserted). A reader holding no refcount takes the mutex AND skips them while `.loading` — not `== .ready`, an unloaded entry keeps them by contract.
+- **An embedded engine gets ONE persistent session per model, claimed like llama's** (`LoadedModel.ds4_session` + `session_busy` in `submit`/`complete`): a ds4 session at 131k context is ~13 GB of buffers, and one per REQUEST under four concurrent llmprobe requests took RSS 41 → 97 GB and a silent SIGKILL. The shared session is also ds4's prefix reuse (`cached_tokens` > 0). Guard: `tests/test_ds4_serve.sh`.
+- **ds4's in-checkpoint MTP is `glm_mtp`, armed only when the GGUF header declares `<arch>.nextn_predict_layers` > 0** (`gguf_meta.Info.embedded_mtp` → `OpenOptions.embedded_mtp`; asking on a headless model REFUSES the open). It serves sampled requests through `ds4_session_eval_speculative`; support-GGUF drafts stay greedy-only (`ds4MtpShouldEngage`). Guard: `tests/test_ds4_serve.sh` engagement step.
+- **Embeddings on an engine-backed model refuse by NAME before the scheduler** (`handleEmbeddings`: no MLX transformer → 400): `runEmbedRequest` dereferenced the null transformer and segfaulted the server mid-run.
 - **A status route must never reach `ensureLoaded`**: `GET /props` cold-loaded the model, so a 3s tray poll retook the memory idle eviction had just handed back. Nothing resident → answer from the counters (`handlePropsNoModel`).
 - **An embedding SUB-BATCH is its own forward** (`computeEmbeddingsBatch` resets the cache before every sub-batch, not the request): a decoder-arch embedder (Qwen3-Embedding) forwards through the KV cache, so a later sub-batch attended to the earlier rows and answered wrong vectors. Guard: `tests/test_embeddings.sh` [4c].
 

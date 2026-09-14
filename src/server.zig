@@ -7053,10 +7053,12 @@ fn handleEmbeddings(
     body: []const u8,
     lm: *LoadedModel,
 ) !void {
-    // Optional: engine-backed (GGUF/ds4) models have no MLX transformer. The
-    // scheduler path doesn't need it; only the no-scheduler fallback does, and
-    // it guards on this being present.
-    const xfm_opt = lm.transformer;
+    // Engine-backed (GGUF/ds4) models have no MLX transformer and both embed
+    // paths forward through it: refuse by name before anything is queued.
+    const xfm = lm.transformer orelse {
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "This model runs on an embedded engine (GGUF); embeddings are not supported. Load an MLX embedding model instead.", null);
+        return;
+    };
     const tok = lm.tokenizer.?;
     const config = lm.config.?;
     const gen_mod = @import("generate.zig");
@@ -7203,10 +7205,6 @@ fn handleEmbeddings(
             return;
         };
     } else fallback: {
-        const xfm = xfm_opt orelse {
-            try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "Embeddings require an MLX (safetensors) model; this model has no encoder", null);
-            return;
-        };
         break :fallback gen_mod.computeEmbeddingsBatch(allocator, xfm, seqs.items) catch |err| {
             log.err("  embedding error: {}\n", .{err});
             try sendErrorResponse(allocator, stream, "500 Internal Server Error", "server_error", "Failed to compute embedding", null);

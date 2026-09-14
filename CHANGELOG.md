@@ -26,9 +26,13 @@
 - `--ssm-checkpoint-max` defaults to 16 (was 32).
 - The measured speculative-decoding cost table is no longer saved across restarts by default; `MLX_SERVE_ROUND_COST_PERSIST=1` keeps it.
 - The Neural Engine compile cache is capped by free space on the internal disk, so a full disk no longer ships a half-built offload.
+- Embedded engines updated: llama.cpp to v0.4.0 (b10809) and ds4 to the September 14 head. ds4's own GGUFs for DeepSeek V4.1 Flash, GLM 5.3 Flash and Qwen3.8 Flash Next now route to the ds4 engine instead of failing in llama.cpp.
+- GGUFs that carry their own MTP head (Qwen3.8 Flash Next, GLM 5.x on ds4) now speculate on both greedy and sampled requests (`--mtp`, default on; `--no-ds4-mtp` opts out): 35 to 47 tok/s on the Flash Next Q2 pack on an M4 Max.
 
 ### Fixes
 
+- GGUF models on the embedded ds4 engine keep one session per model instead of one per request: four concurrent requests at 128k context no longer take 60 GB extra and get the server killed, and a repeated prompt reuses its cached prefix.
+- Embeddings requested from a GGUF model return a named 400 instead of crashing the server.
 - Flash Next agent sessions that share a long system prompt no longer get stuck re-reading the whole conversation every turn. A conversation that inherited another one's cache checkpoints was missing part of its sparse-attention history, and the broken entry stayed in the cache until the model was unloaded. (#390, thanks @d-b)
 - Embeddings for a batch big enough to be split returned wrong vectors for everything after the first chunk. (#403, thanks @josk0)
 - An MLX error while writing the KV cache now fails only that request instead of crashing the server later. (#405, thanks @josk0)
