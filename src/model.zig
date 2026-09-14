@@ -3931,6 +3931,29 @@ test "loadWeights reads only the shards the index names (issue #274)" {
     try std.testing.expectEqual(@as(u32, 1), w.count());
 }
 
+test "loadWeights ignores an index that names no shard on disk (re-sharded upload, stale index)" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const hdr = "{\"w\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
+    var st: [8 + hdr.len + 4]u8 = undefined;
+    std.mem.writeInt(u64, st[0..8], hdr.len, .little);
+    @memcpy(st[8 .. 8 + hdr.len], hdr);
+    @memset(st[8 + hdr.len ..], 0);
+    try tmp.dir.writeFile(io, .{ .sub_path = "model-00001-of-00002.safetensors", .data = &st });
+    try tmp.dir.writeFile(io, .{ .sub_path = "model.safetensors.index.json", .data = "{\"weight_map\":{\"w\":\"model-00001-of-00005.safetensors\"}}" });
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.NoCwd;
+    const cwd = std.mem.span(@as([*:0]const u8, @ptrCast(cwd_ptr)));
+    const dir = try std.fmt.allocPrint(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
+    defer allocator.free(dir);
+    var w = try loadWeightsFromOpenDir(io, allocator, tmp.dir, dir, false);
+    defer w.deinit();
+    try std.testing.expectEqual(@as(u32, 1), w.count());
+}
+
 test "resolveWeightPrefix: the CHECKPOINT decides the nesting, not the config keys" {
     // mlx-community/LFM2.5-2.6B-{8bit,nvfp4} declare `Lfm2ForCausalLM` with NO
     // text_config (just an empty `vision_config`), yet ship every weight under

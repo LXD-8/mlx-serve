@@ -269,8 +269,18 @@ pub fn indexShardSet(io: std.Io, dir: std.Io.Dir) ?std.StringHashMapUnmanaged(vo
             continue;
         };
     }
-    if (set.count() == 0) {
-        set.deinit(a);
+    // An index none of whose shards exist is stale (the repo was re-sharded
+    // after this index was written); the directory is then the set.
+    var any_present = false;
+    var keys = set.keyIterator();
+    while (keys.next()) |k| {
+        _ = dir.statFile(io, k.*, .{}) catch continue;
+        any_present = true;
+        break;
+    }
+    if (!any_present) {
+        log.warn("model.safetensors.index.json names no shard in this directory; loading every *.safetensors instead\n", .{});
+        freeShardSet(&set);
         return null;
     }
     return set;

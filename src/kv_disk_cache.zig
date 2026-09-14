@@ -116,6 +116,7 @@ const DarwinStatfs = extern struct {
     tail: [4096]u8,
 };
 extern "c" fn statfs(path: [*:0]const u8, buf: *DarwinStatfs) c_int;
+extern fn msv_volume_free_for_use(path: [*:0]const u8) u64;
 
 pub const VolumeSpace = struct { free: u64, total: u64 };
 
@@ -131,10 +132,11 @@ pub fn volumeSpace(path: []const u8) ?VolumeSpace {
     const bsize: u64 = st.f_bsize;
     if (bsize < 512 or bsize > (1 << 20) or !std.math.isPowerOfTwo(bsize)) return null;
     if (st.f_blocks == 0 or st.f_bavail > st.f_blocks) return null;
-    return .{
-        .free = bsize *| st.f_bavail,
-        .total = bsize *| st.f_blocks,
-    };
+    const total = bsize *| st.f_blocks;
+    // statfs excludes purgeable space the OS releases on demand; ask what a write really gets.
+    const granted = msv_volume_free_for_use(buf[0..path.len :0].ptr);
+    const free = if (granted > 0 and granted <= total) granted else bsize *| st.f_bavail;
+    return .{ .free = free, .total = total };
 }
 
 /// How a `DiskTier` asks what the volume has left. Injectable: with the live probe hard-wired
@@ -5966,6 +5968,17 @@ test "volumeSpace: the live probe is plausible or null (statfs ABI guard)" {
     try testing.expect(vs.total > 0);
     try testing.expect(vs.free <= vs.total);
     try testing.expect(vs.total > 1024 * 1024 * 1024); // a macOS root volume
+}
+
+test "volumeSpace: free is what the OS grants, never less than statfs' f_bavail" {
+    // Purgeable space is not in f_bavail; the tier used to refuse a volume with 117 GB usable.
+    var st: DarwinStatfs = undefined;
+    try testing.expect(statfs("/", &st) == 0);
+    const vs = volumeSpace("/") orelse return error.VolumeSpaceProbeFailed;
+    const granted = msv_volume_free_for_use("/");
+    try testing.expect(granted > 0);
+    try testing.expect(vs.free >= @as(u64, st.f_bsize) * st.f_bavail);
+    if (granted <= vs.total) try testing.expectEqual(granted, vs.free);
 }
 
 test "DiskTier: SSD-first declines to store when the VOLUME is short, and says so" {
