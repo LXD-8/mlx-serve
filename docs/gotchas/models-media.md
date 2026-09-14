@@ -1821,3 +1821,43 @@ HF `tokenizers` on code, numbers, CJK and contractions: byte-identical ids.
 Bar: greedy 8-bit answers (thinking split, GLM `<arg_key>` tool calls,
 tool-response turn, 2.8k-token needle past the 512 window) and the HF
 reference oracle on the bf16 checkpoint (`~/claude-tmp/sparkx/oracle.py`).
+
+## K2-Horizon (`k2_horizon`) port (2026-09-14)
+
+IFM's dense sizes are a Llama trunk (stock weight names, GQA, full-head RoPE
+at theta 1e7, untied head) with ONE arch difference: `K2HorizonRMSNorm`
+normalizes `layernorm_num_groups` (4) channel groups on their own rms before
+the full-width weight. `groupedRmsNorm` does reshape → weight-less rms_norm →
+reshape → multiply, gated inside `rmsNorm` on `norm_groups > 1` and the
+residual width (a per-head q/k norm is already one group per head). The
+first live load answered 17*23 correctly through the generic fallback prompt,
+so the forward was right before the template was.
+
+Three things were not the arch:
+
+- The 51 KB template hit two jinja.cpp gaps: `{% if spec is sameas true %}`
+  (a test with a BARE argument; the parser only knew `is x(arg)`) and
+  `sameas` itself (`not_implemented`). Both fixed in `lib/jinja_cpp`,
+  `libjinja.a` rebuilt. The failure was the usual silent generic fallback.
+- Every marker is a special token spelled `<ifm|…>`: three think openers
+  (`<ifm|think>`, `<ifm|think_fast>`, `<ifm|think_faster>`, picked by
+  `reasoning_effort` high/medium/low, the template raising on any other
+  word) and the GLM tool tags. Threading a fourth think spelling through the
+  ~200 literal sites was the wrong shape; the tokenizer decodes them to the
+  canonical bytes instead (`installMarkerAliases`, decode-only), so parsing,
+  streaming gates and the split all see `<think>` and `<arg_key>`. Only the
+  rendered prompt keeps the pack's spelling, which is why thinking-off's
+  closer is chosen from the rendered tail (`k2ThinkOpenerAt`). The template
+  also raises when an assistant history turn carries no thinking field, so
+  the K2 family always gets a `reasoning_content` (empty when the client sent
+  none).
+- `<|ifm|im_end|>` is declared ONLY in `generation_config.json`'s
+  `eos_token_id` list; config.json names `<|ifm|endoftext|>`. We never read
+  that list, and the model wrote `<|ifm|im_end|>` and kept going. Merged
+  additively at load for every model (`mergeEosTokens`).
+
+Bar: HF `tokenizers` byte-identical ids on numbers, code, CJK, contractions
+and the markers; greedy answers with thinking on/off, effort low, tool calls
+(plain and streamed with thinking), tool-result history, JSON schema and the
+Anthropic surface on the 6-bit pack. Known gap: JSON schema + thinking has no
+atomic `</think>` to recover through, so it keeps thinking off.

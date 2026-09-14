@@ -5880,6 +5880,7 @@ fn clampMaxTokens(max_tokens: u32, prompt_len: usize, effective_ctx: u32) u32 {
 fn chatTemplateSupportsThinking(tmpl: []const u8) bool {
     return std.mem.indexOf(u8, tmpl, "enable_thinking") != null or
         std.mem.indexOf(u8, tmpl, "<think>") != null or
+        std.mem.indexOf(u8, tmpl, "<ifm|think") != null or
         std.mem.indexOf(u8, tmpl, "thought") != null or
         std.mem.indexOf(u8, tmpl, "<|channel>") != null;
 }

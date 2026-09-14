@@ -139,6 +139,8 @@ pub const ModelConfig = struct {
     num_key_value_heads: u32 = 8,
     head_dim: u32 = 256,
     rms_norm_eps: f32 = 1e-6,
+    /// K2-Horizon: every RMS norm normalizes `hidden_size / norm_groups`-wide channel groups on their own rms, then applies the full weight.
+    norm_groups: u32 = 1,
 
     // RoPE
     rope_theta: f32 = 1000000.0,
@@ -1006,6 +1008,11 @@ pub const ModelConfig = struct {
             std.mem.eql(u8, self.model_type, "diffusion_gemma");
     }
 
+    /// Additive + dedup-guarded, like every terminator merge here.
+    pub fn mergeEosTokens(self: *ModelConfig, ids: []const u32) void {
+        for (ids) |id| if (!self.isEosToken(id)) self.addEosToken(id);
+    }
+
     pub fn addEosToken(self: *ModelConfig, id: u32) void {
         if (self.num_eos_tokens < self.eos_token_ids.len) {
             self.eos_token_ids[self.num_eos_tokens] = id;
@@ -1333,6 +1340,7 @@ pub fn parseConfig(io: std.Io, allocator: std.mem.Allocator, model_dir: []const 
             config.gen_top_p = gd.top_p;
             config.gen_top_k = gd.top_k;
             config.gen_enable_thinking = gd.enable_thinking;
+            config.mergeEosTokens(gd.eos_token_ids[0..gd.num_eos]);
         } else |_| {}
     } else |_| {}
     // Pooling (issue #116), priority: explicit config.json `pooling_mode`
@@ -1419,6 +1427,11 @@ pub const GenerationDefaults = struct {
     /// `default_chat_template_kwargs.enable_thinking` — the checkpoint's own
     /// thinking default. null when absent or not a bool.
     enable_thinking: ?bool = null,
+    /// `eos_token_id` (scalar or list): HF stops generation on these, and a
+    /// checkpoint may name the chat terminator ONLY here (K2-Horizon's
+    /// `<|ifm|im_end|>` rides beside config.json's `<|ifm|endoftext|>`).
+    eos_token_ids: [8]u32 = @splat(0),
+    num_eos: usize = 0,
 };
 
 /// Image-area limits parsed from a Qwen processor configuration.
@@ -1513,6 +1526,21 @@ pub fn parseGenerationDefaultsFromJson(content: []const u8) GenerationDefaults {
         switch (v) {
             .integer => |i| if (i > 0 and i <= 1000) {
                 gd.top_k = @intCast(i);
+            },
+            else => {},
+        }
+    }
+    if (root.get("eos_token_id")) |v| {
+        switch (v) {
+            .integer => |i| if (i >= 0) {
+                gd.eos_token_ids[0] = @intCast(i);
+                gd.num_eos = 1;
+            },
+            .array => |arr| for (arr.items) |item| {
+                if (item == .integer and item.integer >= 0 and gd.num_eos < gd.eos_token_ids.len) {
+                    gd.eos_token_ids[gd.num_eos] = @intCast(item.integer);
+                    gd.num_eos += 1;
+                }
             },
             else => {},
         }
@@ -3428,6 +3456,15 @@ pub fn parseConfigFromJson(allocator: std.mem.Allocator, content: []const u8) !M
             config.model_type = "llama";
         } else if (std.mem.eql(u8, model_type, "mistral")) {
             config.model_type = "mistral";
+        } else if (std.mem.eql(u8, model_type, "k2_horizon")) {
+            // IFM K2-Horizon dense (0.9B/3.7B/7B/32B): a Llama trunk whose
+            // RMS norms are GROUPED (`layernorm_num_groups`). The MoVA MoE
+            // sizes (`mova_num_experts` > 0) are a different attention and
+            // are not served.
+            config.model_type = "k2_horizon";
+            if (cfg_obj.get("layernorm_num_groups")) |v| {
+                if (v == .integer and v.integer > 1) config.norm_groups = @intCast(v.integer);
+            }
         } else {
             config.model_type = "unknown";
         }
@@ -4214,6 +4251,19 @@ test "parseGenerationDefaultsFromJson: reads default_chat_template_kwargs.enable
     try testing.expectEqual(@as(?bool, null), parseGenerationDefaultsFromJson(
         "{\"default_chat_template_kwargs\": {\"enable_thinking\": \"yes\"}}",
     ).enable_thinking);
+}
+
+test "parseGenerationDefaultsFromJson: eos_token_id list merges additively into the stop set" {
+    const gd = parseGenerationDefaultsFromJson("{\"eos_token_id\": [1, 250019]}");
+    try testing.expectEqual(@as(usize, 2), gd.num_eos);
+    var config = ModelConfig{};
+    config.addEosToken(1);
+    config.mergeEosTokens(gd.eos_token_ids[0..gd.num_eos]);
+    try testing.expectEqual(@as(u32, 2), config.num_eos_tokens);
+    try testing.expect(config.isEosToken(250019));
+    const scalar = parseGenerationDefaultsFromJson("{\"eos_token_id\": 7}");
+    try testing.expectEqual(@as(u32, 7), scalar.eos_token_ids[0]);
+    try testing.expectEqual(@as(usize, 0), parseGenerationDefaultsFromJson("{\"eos_token_id\": \"x\"}").num_eos);
 }
 
 test "ModelConfig addEosToken" {
@@ -7220,4 +7270,31 @@ test "qwen4 PLE placement: the layer loop must install exactly one PLE, at the c
     // ...while a config that DOES name a layer is unchanged.
     try testing.expect(!qwen4PleInstalledAt(&.{false}, 0));
     try testing.expect(qwen4PleInstalledAt(&.{true}, 0));
+}
+
+test "ModelConfig parses k2_horizon (K2-Horizon-7B): llama trunk with grouped RMS norms" {
+    const json =
+        \\{
+        \\  "model_type": "k2_horizon",
+        \\  "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
+        \\  "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128,
+        \\  "hidden_act": "silu", "rms_norm_eps": 1e-06, "vocab_size": 250624,
+        \\  "layernorm_num_groups": 4, "query_key_norm": false, "attention_gate_func": null,
+        \\  "num_experts": 0, "sliding_window": null, "tie_word_embeddings": false,
+        \\  "max_position_embeddings": 524288, "rope_head_dim": 128,
+        \\  "rope_parameters": {"rope_theta": 10000000.0, "rope_type": "default"}
+        \\}
+    ;
+    const config = try parseConfigFromJson(testing.allocator, json);
+    try testing.expectEqualStrings("k2_horizon", config.model_type);
+    try testing.expectEqualStrings("model", config.weight_prefix);
+    try testing.expectEqual(@as(u32, 4), config.norm_groups);
+    try testing.expectEqual(HiddenAct.silu, config.hidden_act);
+    try testing.expectEqual(@as(u32, 128), config.head_dim);
+    try testing.expectEqual(@as(f32, 10000000.0), config.rope_theta);
+    try testing.expect(!config.has_qk_norm);
+    try testing.expect(!config.has_sliding_window);
+    try testing.expect(!config.tie_word_embeddings);
+    try testing.expect(!config.norm_has_offset);
+    try testing.expect(!config.has_pre_ff_norm);
 }
