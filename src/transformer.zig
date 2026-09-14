@@ -34434,13 +34434,14 @@ fn gatherQmvSource(comptime nvfp4: bool, comptime x_per_expert: bool) [:0]const 
         \\
         \\int K = int(K_size);
         \\int N = int(N_size);
-        \\int VPW = 32 / BITS;                     // quantized values per uint32 word
-        \\int K_by_p = K / VPW;                    // packed words per row
+        \\constexpr int VPW = (BITS == 3) ? 8 : 32 / BITS;  // values per pack: a word, or 3 bytes at 3-bit
+        \\int K_by_p = K / VPW;                    // packs per row
+        \\int K_by_w = K * BITS / 32;              // words per row
         \\int K_by_gs = K / GS;                    // quant groups per row
         \\uint mask = (1u << BITS) - 1u;
         \\
         \\uint eid = inds[e];                      // bank row for this slot
-        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_p + (size_t)n * (size_t)K_by_p;
+        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_w + (size_t)n * (size_t)K_by_w;
         \\size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
         \\size_t xoff = {s};
         \\
@@ -34448,7 +34449,7 @@ fn gatherQmvSource(comptime nvfp4: bool, comptime x_per_expert: bool) [:0]const 
         \\// serial dependency; VPW is 16/8/4 for bits 2/4/8, always a multiple of 4.
         \\float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
         \\for (int pack = int(lane); pack < K_by_p; pack += 32) {{
-        \\  uint32_t packed = w_q[wbase + (size_t)pack];
+        \\  uint32_t packed = mlxserve_qpack<BITS>(w_q, wbase, pack);
         \\  int k_base = pack * VPW;
         \\  int gi = k_base / GS;                  // GS >= VPW, so one group per word
         \\{s}
@@ -34506,7 +34507,21 @@ const GQMV_BODY_NVFP4 =
 // (4-bit exp, 3-bit mantissa) yields it scaled by 2^-8. Callers fold both back
 // in with one multiply. Matches MLX's own `fp4.h` / `fp8.h` conversions, whose
 // sign handling is a branch instead of a shift.
-const GQMV_NVFP4_HEADER =
+// One packed unit of quantized values as a uint32: a word for 2/4/8-bit; at
+// 3-bit, mx.quantize packs 8 values into 3 bytes (value i at bit 3i), so the
+// unit is a byte triple and the body's `>> (i * BITS)` walk is unchanged.
+const GQMV_AFFINE_HEADER =
+    \\template <int B>
+    \\inline uint32_t mlxserve_qpack(const device uint32_t* w, size_t wbase_words, int pack) {
+    \\  if (B == 3) {
+    \\    const device uchar* wb = (const device uchar*)w + wbase_words * 4 + (size_t)pack * 3;
+    \\    return uint32_t(wb[0]) | (uint32_t(wb[1]) << 8) | (uint32_t(wb[2]) << 16);
+    \\  }
+    \\  return w[wbase_words + (size_t)pack];
+    \\}
+;
+
+const GQMV_NVFP4_HEADER = GQMV_AFFINE_HEADER ++
     \\inline float mlxserve_e2m1(uint c) {
     \\  return float(as_type<half>(ushort(((c & 0x7u) << 9) | ((c & 0x8u) << 12))));
     \\}
@@ -34538,13 +34553,14 @@ fn gatherQmvGateUpSource(comptime nvfp4: bool) [:0]const u8 {
         \\
         \\int K = int(K_size);
         \\int N = int(N_size);
-        \\int VPW = 32 / BITS;
+        \\constexpr int VPW = (BITS == 3) ? 8 : 32 / BITS;
         \\int K_by_p = K / VPW;
+        \\int K_by_w = K * BITS / 32;
         \\int K_by_gs = K / GS;
         \\uint mask = (1u << BITS) - 1u;
         \\
         \\uint eid = inds[e];
-        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_p + (size_t)n * (size_t)K_by_p;
+        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_w + (size_t)n * (size_t)K_by_w;
         \\size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
         \\size_t xrow = 0;
         \\
@@ -34556,8 +34572,8 @@ fn gatherQmvGateUpSource(comptime nvfp4: bool) [:0]const u8 {
         \\uint32_t pu[IT];
         \\for (int i = 0; i < IT; ++i) {{
         \\  int pack = int(lane) + 32 * i;
-        \\  pg[i] = (pack < KP) ? wg_q[wbase + (size_t)pack] : 0u;
-        \\  pu[i] = (pack < KP) ? wu_q[wbase + (size_t)pack] : 0u;
+        \\  pg[i] = (pack < KP) ? mlxserve_qpack<BITS>(wg_q, wbase, pack) : 0u;
+        \\  pu[i] = (pack < KP) ? mlxserve_qpack<BITS>(wu_q, wbase, pack) : 0u;
         \\}}
         \\// Two independent 4-way accumulator sets: the gate chain and the up
         \\// chain never wait on each other.
@@ -34659,7 +34675,7 @@ fn getGatherQmvGateUpKernel(nvfp4: bool) !mlx.mlx_fast_metal_kernel {
         in_vec,
         out_vec,
         GQMV_GATEUP_SOURCES[mi],
-        if (nvfp4) GQMV_NVFP4_HEADER else "",
+        if (nvfp4) GQMV_NVFP4_HEADER else GQMV_AFFINE_HEADER,
         true,
         false,
     );
@@ -35278,6 +35294,19 @@ pub fn hcReadFused(
     return .{ .mixed = mixed, .inj = inj_out, .stream = stream_out };
 }
 
+/// One quant group per pack: a word for 2/4/8-bit, a byte triple (8 values) for 3-bit.
+fn affineQmvUnitOk(bits: u32, group_size: u32) bool {
+    return switch (bits) {
+        2, 4, 8 => group_size % (32 / bits) == 0,
+        3 => group_size % 8 == 0,
+        else => false,
+    };
+}
+
+fn affineQmvPackUnits(K: c_int, bits: u32) c_int {
+    return if (bits == 3) @divExact(K, 8) else @divExact(K * @as(c_int, @intCast(bits)), 32);
+}
+
 const GateUpCfgKey = struct { topk: c_int, n: c_int, k: c_int, bits: u32, gs: u32, dtype: mlx.mlx_dtype };
 var gateup_cfg: ?mlx.mlx_fast_metal_kernel_config = null;
 var gateup_cfg_key: GateUpCfgKey = std.mem.zeroes(GateUpCfgKey);
@@ -35323,8 +35352,7 @@ pub fn gatherQmvGateUp(
         if (mlx.mlx_array_dtype(gs_arr) != .uint8 or mlx.mlx_array_dtype(us_arr) != .uint8) return null;
         if (gb.ctx != null or ub.ctx != null) return null;
     } else {
-        if (bits != 2 and bits != 4 and bits != 8) return null;
-        if (group_size % (32 / bits) != 0) return null;
+        if (!affineQmvUnitOk(bits, group_size)) return null;
         if (gb.ctx == null or ub.ctx == null) return null;
     }
     if (gs_arr.ctx == null or us_arr.ctx == null) return null;
@@ -35364,7 +35392,7 @@ pub fn gatherQmvGateUp(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "T", xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "GS", @intCast(group_size)));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "BITS", @intCast(bits)));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "KP", @divExact(K * @as(c_int, @intCast(bits)), 32)));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "KP", affineQmvPackUnits(K, bits)));
         gateup_cfg = config;
         gateup_cfg_key = key;
     }
@@ -35403,13 +35431,14 @@ fn gatherQmvGateUpRowsSource(comptime nvfp4: bool) [:0]const u8 {
         \\
         \\int K = int(K_size);
         \\int N = int(N_size);
-        \\int VPW = 32 / BITS;
+        \\constexpr int VPW = (BITS == 3) ? 8 : 32 / BITS;
         \\int K_by_p = K / VPW;
+        \\int K_by_w = K * BITS / 32;
         \\int K_by_gs = K / GS;
         \\uint mask = (1u << BITS) - 1u;
         \\
         \\uint eid = inds[(size_t)row * (size_t)TOPK + e];
-        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_p + (size_t)n * (size_t)K_by_p;
+        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_w + (size_t)n * (size_t)K_by_w;
         \\size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
         \\size_t xrow = (size_t)row * (size_t)K;
         \\
@@ -35418,8 +35447,8 @@ fn gatherQmvGateUpRowsSource(comptime nvfp4: bool) [:0]const u8 {
         \\uint32_t pu[IT];
         \\for (int i = 0; i < IT; ++i) {{
         \\  int pack = int(lane) + 32 * i;
-        \\  pg[i] = (pack < KP) ? wg_q[wbase + (size_t)pack] : 0u;
-        \\  pu[i] = (pack < KP) ? wu_q[wbase + (size_t)pack] : 0u;
+        \\  pg[i] = (pack < KP) ? mlxserve_qpack<BITS>(wg_q, wbase, pack) : 0u;
+        \\  pu[i] = (pack < KP) ? mlxserve_qpack<BITS>(wu_q, wbase, pack) : 0u;
         \\}}
         \\float g0 = 0.0f, g1 = 0.0f, g2 = 0.0f, g3 = 0.0f;
         \\float u0 = 0.0f, u1 = 0.0f, u2 = 0.0f, u3 = 0.0f;
@@ -35467,7 +35496,7 @@ fn getGatherQmvGateUpRowsKernel(nvfp4: bool) !mlx.mlx_fast_metal_kernel {
         in_vec,
         out_vec,
         GQMV_GATEUP_ROWS_SOURCES[mi],
-        if (nvfp4) GQMV_NVFP4_HEADER else "",
+        if (nvfp4) GQMV_NVFP4_HEADER else GQMV_AFFINE_HEADER,
         true,
         false,
     );
@@ -35540,8 +35569,7 @@ pub fn gatherQmvGateUpRows(
         if (mlx.mlx_array_dtype(gs_arr) != .uint8 or mlx.mlx_array_dtype(us_arr) != .uint8) return null;
         if (gb.ctx != null or ub.ctx != null) return null;
     } else {
-        if (bits != 2 and bits != 4 and bits != 8) return null;
-        if (group_size % (32 / bits) != 0) return null;
+        if (!affineQmvUnitOk(bits, group_size)) return null;
         if (gb.ctx == null or ub.ctx == null) return null;
     }
     if (gs_arr.ctx == null or us_arr.ctx == null) return null;
@@ -35577,7 +35605,7 @@ pub fn gatherQmvGateUpRows(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "T", xd));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "GS", @intCast(group_size)));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "BITS", @intCast(bits)));
-        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "KP", @divExact(K * @as(c_int, @intCast(bits)), 32)));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "KP", affineQmvPackUnits(K, bits)));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "TOPK", topk));
         gateup_rows_cfg = config;
         gateup_rows_cfg_key = key;
@@ -35638,7 +35666,7 @@ fn getGatherQmvKernel(nvfp4: bool, x_per_expert: bool) !mlx.mlx_fast_metal_kerne
         in_vec,
         out_vec,
         GQMV_SOURCES[mi][xi],
-        if (nvfp4) GQMV_NVFP4_HEADER else "",
+        if (nvfp4) GQMV_NVFP4_HEADER else GQMV_AFFINE_HEADER,
         true,
         false,
     );
@@ -35702,8 +35730,7 @@ pub fn gatherQmv(
     } else {
         // Only widths where one uint32 holds a whole number of values (5/6-bit
         // affine is byte-packed differently — those fall back).
-        if (bits != 2 and bits != 4 and bits != 8) return null;
-        if (group_size % (32 / bits) != 0) return null; // one quant group per word
+        if (!affineQmvUnitOk(bits, group_size)) return null;
         if (bi.ctx == null) return null;
     }
     if (sc.ctx == null) return null;
@@ -35787,6 +35814,11 @@ pub fn gatherQmv(
 // MLX_SERVE_MOE_DOWN_REDUCE_FUSED=0; bit-identity pinned by the
 // "down+reduce" parity tests.
 fn gatherQmvDownReduceSource(comptime nvfp4: bool) [:0]const u8 {
+    // LPR lanes share one output row and ROWS = 32 / LPR rows ride one simdgroup
+    // in parallel: K is short (the MoE intermediate), so one 32-lane reduction
+    // per row cost more than the dot product it reduced, and K/8 packs over 32
+    // lanes left a third of them idle. Every row's packs split exactly over LPR
+    // lanes, and one log2(LPR)-step shuffle reduces all ROWS rows at once.
     return std.fmt.comptimePrint(
         \\auto lane = thread_index_in_simdgroup;
         \\uint slot = simdgroup_index_in_threadgroup;   // top-K slot
@@ -35794,29 +35826,39 @@ fn gatherQmvDownReduceSource(comptime nvfp4: bool) [:0]const u8 {
         \\
         \\int K = int(K_size);
         \\int N = int(N_size);
-        \\int VPW = 32 / BITS;
-        \\int K_by_p = K / VPW;
+        \\constexpr int VPW = (BITS == 3) ? 8 : 32 / BITS;
+        \\int K_by_w = K * BITS / 32;
         \\int K_by_gs = K / GS;
         \\uint mask = (1u << BITS) - 1u;
         \\
         \\uint eid = inds[slot];
         \\size_t xoff = (size_t)slot * (size_t)K;
         \\threadgroup T slot_vals[uint(TOPK) * uint(ROWS)];
-        \\for (uint r = 0; r < uint(ROWS); ++r) {{
-        \\  uint n = tile * uint(ROWS) + r;
-        \\  size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_p + (size_t)n * (size_t)K_by_p;
-        \\  size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
-        \\  float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-        \\  for (int pack = int(lane); pack < K_by_p; pack += 32) {{
-        \\    uint32_t packed = w_q[wbase + (size_t)pack];
-        \\    int k_base = pack * VPW;
-        \\    int gi = k_base / GS;
+        \\uint r = lane / uint(LPR);
+        \\uint sub = lane % uint(LPR);
+        \\uint n = tile * uint(ROWS) + r;
+        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_w + (size_t)n * (size_t)K_by_w;
+        \\size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
+        \\float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+        \\constexpr int IT = (KP + LPR - 1) / LPR;
+        \\uint32_t pw[IT];
+        \\for (int i = 0; i < IT; ++i) {{
+        \\  int pack = int(sub) + LPR * i;
+        \\  pw[i] = (pack < KP) ? mlxserve_qpack<BITS>(w_q, wbase, pack) : 0u;
+        \\}}
+        \\for (int i = 0; i < IT; ++i) {{
+        \\  int pack = int(sub) + LPR * i;
+        \\  if (pack >= KP) break;
+        \\  uint32_t packed = pw[i];
+        \\  int k_base = pack * VPW;
+        \\  int gi = k_base / GS;
         \\{s}
-        \\  }}
-        \\  float acc = simd_sum((a0 + a1) + (a2 + a3)){s};
-        \\  if (lane == 0) {{
-        \\    slot_vals[slot * uint(ROWS) + r] = T(acc);
-        \\  }}
+        \\}}
+        \\float acc = (a0 + a1) + (a2 + a3);
+        \\for (uint d = uint(LPR) / 2u; d >= 1u; d >>= 1u) acc += simd_shuffle_xor(acc, ushort(d));
+        \\acc = acc{s};
+        \\if (sub == 0u) {{
+        \\  slot_vals[slot * uint(ROWS) + r] = T(acc);
         \\}}
         \\threadgroup_barrier(mem_flags::mem_threadgroup);
         \\// Composed-pair replica: T-rounded per-slot product, ascending T sum.
@@ -35854,7 +35896,7 @@ fn getGatherQmvDownReduceKernel(nvfp4: bool) !mlx.mlx_fast_metal_kernel {
         in_vec,
         out_vec,
         GQMV_DOWNRED_SOURCES[mi],
-        if (nvfp4) GQMV_NVFP4_HEADER else "",
+        if (nvfp4) GQMV_NVFP4_HEADER else GQMV_AFFINE_HEADER,
         true,
         false,
     );
@@ -35863,6 +35905,9 @@ fn getGatherQmvDownReduceKernel(nvfp4: bool) !mlx.mlx_fast_metal_kernel {
     return kernel;
 }
 
+/// Lanes per output row in the down+reduce kernels; 32/LPR rows per simdgroup.
+/// 4 spills its hoisted packs, 16 measured the same as 8 on the shipped shapes.
+const DOWNRED_LPR: c_int = 8;
 const DownRedCfgKey = struct { topk: c_int, n: c_int, bits: u32, gs: u32, dtype: mlx.mlx_dtype };
 var downred_cfg: ?mlx.mlx_fast_metal_kernel_config = null;
 var downred_cfg_key: DownRedCfgKey = std.mem.zeroes(DownRedCfgKey);
@@ -35908,8 +35953,7 @@ pub fn gatherQmvDownReduce(
         if (mlx.mlx_array_dtype(sc) != .uint8) return null;
         if (bi.ctx != null) return null;
     } else {
-        if (bits != 2 and bits != 4 and bits != 8) return null;
-        if (group_size % (32 / bits) != 0) return null;
+        if (!affineQmvUnitOk(bits, group_size)) return null;
         if (bi.ctx == null) return null;
     }
     if (sc.ctx == null) return null;
@@ -35933,7 +35977,7 @@ pub fn gatherQmvDownReduce(
     var xelems: i64 = 1;
     for (xsh) |d| xelems *= d;
     if (xelems != @as(i64, topk) * K) return null;
-    const rows: c_int = 4;
+    const rows: c_int = @divExact(32, DOWNRED_LPR);
     if (@rem(N, rows) != 0) return null;
 
     const key = DownRedCfgKey{ .topk = topk, .n = N, .bits = bits, .gs = group_size, .dtype = xd };
@@ -35949,6 +35993,8 @@ pub fn gatherQmvDownReduce(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "BITS", @intCast(bits)));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "TOPK", topk));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "ROWS", rows));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "LPR", DOWNRED_LPR));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "KP", affineQmvPackUnits(K, bits)));
         downred_cfg = cfg;
         downred_cfg_key = key;
     }
@@ -35973,6 +36019,8 @@ pub fn gatherQmvDownReduce(
 }
 
 fn gatherQmvDownReduceRowsSource(comptime nvfp4: bool) [:0]const u8 {
+    // The solo kernel's layout with a batch row on grid.y; per-row output must
+    // stay bit-identical to the solo call (the rows-vs-solo test pins it).
     return std.fmt.comptimePrint(
         \\auto lane = thread_index_in_simdgroup;
         \\uint slot = simdgroup_index_in_threadgroup;
@@ -35981,29 +36029,39 @@ fn gatherQmvDownReduceRowsSource(comptime nvfp4: bool) [:0]const u8 {
         \\
         \\int K = int(K_size);
         \\int N = int(N_size);
-        \\int VPW = 32 / BITS;
-        \\int K_by_p = K / VPW;
+        \\constexpr int VPW = (BITS == 3) ? 8 : 32 / BITS;
+        \\int K_by_w = K * BITS / 32;
         \\int K_by_gs = K / GS;
         \\uint mask = (1u << BITS) - 1u;
         \\
         \\uint eid = inds[(size_t)row * (size_t)TOPK + slot];
         \\size_t xoff = ((size_t)row * (size_t)TOPK + (size_t)slot) * (size_t)K;
         \\threadgroup T slot_vals[uint(TOPK) * uint(ROWS)];
-        \\for (uint r = 0; r < uint(ROWS); ++r) {{
-        \\  uint n = tile * uint(ROWS) + r;
-        \\  size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_p + (size_t)n * (size_t)K_by_p;
-        \\  size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
-        \\  float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-        \\  for (int pack = int(lane); pack < K_by_p; pack += 32) {{
-        \\    uint32_t packed = w_q[wbase + (size_t)pack];
-        \\    int k_base = pack * VPW;
-        \\    int gi = k_base / GS;
+        \\uint r = lane / uint(LPR);
+        \\uint sub = lane % uint(LPR);
+        \\uint n = tile * uint(ROWS) + r;
+        \\size_t wbase = (size_t)eid * (size_t)N * (size_t)K_by_w + (size_t)n * (size_t)K_by_w;
+        \\size_t gbase = (size_t)eid * (size_t)N * (size_t)K_by_gs + (size_t)n * (size_t)K_by_gs;
+        \\float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+        \\constexpr int IT = (KP + LPR - 1) / LPR;
+        \\uint32_t pw[IT];
+        \\for (int i = 0; i < IT; ++i) {{
+        \\  int pack = int(sub) + LPR * i;
+        \\  pw[i] = (pack < KP) ? mlxserve_qpack<BITS>(w_q, wbase, pack) : 0u;
+        \\}}
+        \\for (int i = 0; i < IT; ++i) {{
+        \\  int pack = int(sub) + LPR * i;
+        \\  if (pack >= KP) break;
+        \\  uint32_t packed = pw[i];
+        \\  int k_base = pack * VPW;
+        \\  int gi = k_base / GS;
         \\{s}
-        \\  }}
-        \\  float acc = simd_sum((a0 + a1) + (a2 + a3)){s};
-        \\  if (lane == 0) {{
-        \\    slot_vals[slot * uint(ROWS) + r] = T(acc);
-        \\  }}
+        \\}}
+        \\float acc = (a0 + a1) + (a2 + a3);
+        \\for (uint d = uint(LPR) / 2u; d >= 1u; d >>= 1u) acc += simd_shuffle_xor(acc, ushort(d));
+        \\acc = acc{s};
+        \\if (sub == 0u) {{
+        \\  slot_vals[slot * uint(ROWS) + r] = T(acc);
         \\}}
         \\threadgroup_barrier(mem_flags::mem_threadgroup);
         \\if (slot == 0 && lane < uint(ROWS)) {{
@@ -36040,7 +36098,7 @@ fn getGatherQmvDownReduceRowsKernel(nvfp4: bool) !mlx.mlx_fast_metal_kernel {
         in_vec,
         out_vec,
         GQMV_DOWNRED_ROWS_SOURCES[mi],
-        if (nvfp4) GQMV_NVFP4_HEADER else "",
+        if (nvfp4) GQMV_NVFP4_HEADER else GQMV_AFFINE_HEADER,
         true,
         false,
     );
@@ -36104,8 +36162,7 @@ pub fn gatherQmvDownReduceRows(
         if (mlx.mlx_array_dtype(sc) != .uint8) return null;
         if (bi.ctx != null) return null;
     } else {
-        if (bits != 2 and bits != 4 and bits != 8) return null;
-        if (group_size % (32 / bits) != 0) return null;
+        if (!affineQmvUnitOk(bits, group_size)) return null;
         if (bi.ctx == null) return null;
     }
     if (sc.ctx == null) return null;
@@ -36130,7 +36187,7 @@ pub fn gatherQmvDownReduceRows(
     var xelems: i64 = 1;
     for (xsh) |d| xelems *= d;
     if (xelems != @as(i64, nrows) * topk * K) return null;
-    const rows: c_int = 4;
+    const rows: c_int = @divExact(32, DOWNRED_LPR);
     if (@rem(N, rows) != 0) return null;
 
     const key = DownRedRowsCfgKey{ .nrows = nrows, .topk = topk, .n = N, .bits = bits, .gs = group_size, .dtype = xd };
@@ -36146,6 +36203,8 @@ pub fn gatherQmvDownReduceRows(
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "BITS", @intCast(bits)));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "TOPK", topk));
         try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "ROWS", rows));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "LPR", DOWNRED_LPR));
+        try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, "KP", affineQmvPackUnits(K, bits)));
         downred_rows_cfg = cfg;
         downred_rows_cfg_key = key;
     }
@@ -41786,9 +41845,14 @@ test "fused gate+up+SwiGLU expert kernel is bit-identical to the split gatherQmv
     const TOPK: c_int = 3;
     const wcnt: usize = @intCast(E * N * K);
 
-    for ([_]bool{ false, true }) |nvfp4| {
-        const bits: u32 = 4;
-        const gs: u32 = if (nvfp4) 16 else 64;
+    for ([_]struct { nvfp4: bool, bits: u32, gs: u32 }{
+        .{ .nvfp4 = false, .bits = 4, .gs = 64 },
+        .{ .nvfp4 = true, .bits = 4, .gs = 16 },
+        .{ .nvfp4 = false, .bits = 3, .gs = 128 },
+    }) |cfg| {
+        const nvfp4 = cfg.nvfp4;
+        const bits = cfg.bits;
+        const gs = cfg.gs;
         const mode: QuantMode = if (nvfp4) .nvfp4 else .affine;
 
         // Two independent banks, so a kernel that read the gate bank twice
@@ -42053,8 +42117,13 @@ test "moe rows fused: N=8 K=10 gate/up and down/reduce match N solo calls" {
     const inter: c_int = 640;
     const topk: c_int = 10;
     const nrows: c_int = 8;
-    const bits: u32 = 4;
-    const gs: u32 = 64;
+    for ([_]struct { bits: u32, gs: u32, dbits: u32, dgs: u32 }{
+        .{ .bits = 4, .gs = 64, .dbits = 8, .dgs = 32 },
+        .{ .bits = 3, .gs = 128, .dbits = 3, .dgs = 64 },
+    }) |cfg| try moeRowsFusedCase(s, rnd, E, hid, inter, topk, nrows, cfg.bits, cfg.gs, cfg.dbits, cfg.dgs);
+}
+
+fn moeRowsFusedCase(s: mlx.mlx_stream, rnd: std.Random, E: c_int, hid: c_int, inter: c_int, topk: c_int, nrows: c_int, bits: u32, gs: u32, dbits: u32, dgs: u32) !void {
     const gate = try moeRowsAffineBank(s, rnd, E, inter, hid, bits, gs);
     defer _ = mlx.mlx_array_free(gate.w);
     defer _ = mlx.mlx_array_free(gate.sc);
@@ -42063,7 +42132,7 @@ test "moe rows fused: N=8 K=10 gate/up and down/reduce match N solo calls" {
     defer _ = mlx.mlx_array_free(up.w);
     defer _ = mlx.mlx_array_free(up.sc);
     defer _ = mlx.mlx_array_free(up.bi);
-    const down = try moeRowsAffineBank(s, rnd, E, hid, inter, 8, 32);
+    const down = try moeRowsAffineBank(s, rnd, E, hid, inter, dbits, dgs);
     defer _ = mlx.mlx_array_free(down.w);
     defer _ = mlx.mlx_array_free(down.sc);
     defer _ = mlx.mlx_array_free(down.bi);
@@ -42081,7 +42150,7 @@ test "moe rows fused: N=8 K=10 gate/up and down/reduce match N solo calls" {
     defer _ = mlx.mlx_array_free(scores);
     const fused_gu = (try gatherQmvGateUpRows(s, x, gate.w, gate.sc, gate.bi, up.w, up.sc, up.bi, inds, bits, gs, .affine)) orelse return error.FusedDeclined;
     defer _ = mlx.mlx_array_free(fused_gu);
-    const fused_dn = (try gatherQmvDownReduceRows(s, fused_gu, down.w, down.sc, down.bi, inds, scores, 8, 32, .affine)) orelse return error.FusedDeclined;
+    const fused_dn = (try gatherQmvDownReduceRows(s, fused_gu, down.w, down.sc, down.bi, inds, scores, dbits, dgs, .affine)) orelse return error.FusedDeclined;
     defer _ = mlx.mlx_array_free(fused_dn);
     var r: c_int = 0;
     while (r < nrows) : (r += 1) {
@@ -42096,7 +42165,7 @@ test "moe rows fused: N=8 K=10 gate/up and down/reduce match N solo calls" {
         const fused_r = try moeRowsSliceRow(s, fused_gu, r);
         defer _ = mlx.mlx_array_free(fused_r);
         try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(fused_r, solo_gu, s));
-        const solo_dn = (try gatherQmvDownReduce(s, solo_gu, down.w, down.sc, down.bi, ir, sr, 8, 32, .affine)) orelse return error.FusedDeclined;
+        const solo_dn = (try gatherQmvDownReduce(s, solo_gu, down.w, down.sc, down.bi, ir, sr, dbits, dgs, .affine)) orelse return error.FusedDeclined;
         defer _ = mlx.mlx_array_free(solo_dn);
         const fused_dr = try moeRowsSliceRow(s, fused_dn, r);
         defer _ = mlx.mlx_array_free(fused_dr);
@@ -43335,6 +43404,8 @@ test "gatherQmv is no worse than stock gather_qmm vs fp32 dequant ground truth" 
 
     for ([_]struct { bits: u32, gs: u32 }{
         .{ .bits = 2, .gs = 64 },
+        .{ .bits = 3, .gs = 64 },
+        .{ .bits = 3, .gs = 128 },
         .{ .bits = 4, .gs = 64 },
         .{ .bits = 8, .gs = 32 },
     }) |cfg| {
@@ -51966,7 +52037,7 @@ test "decode-attn-quant: nvfp4 tail boundary is the last 20% of layers; env move
     try t.expect(!attnDqUseNvfp4(0, 0, null));
 }
 
-test "moe down+reduce fused: bit-identical to gatherQmv + multiply + sum (nvfp4 + affine)" {
+test "moe down+reduce fused: no worse than gatherQmv + multiply + sum vs fp32 truth (nvfp4 + affine)" {
     const s = mlx.gpuStream();
     var prng = std.Random.DefaultPrng.init(0xD09E);
     const rnd = prng.random();
@@ -51974,9 +52045,9 @@ test "moe down+reduce fused: bit-identical to gatherQmv + multiply + sum (nvfp4 
     downred_override = true;
     defer downred_override = null;
 
-    // Two geometries: a small one, and Laguna XS's real decode shape — MLX
-    // picks its sum-reduction kernel by shape, and the tail replica must
-    // match whichever variant the composed chain actually runs.
+    // Two geometries: a small one, and Laguna XS's real decode shape. The fused
+    // kernel reduces each row over 8 lanes, the composed chain over 32, so the
+    // bar is error against the f32 truth, never bit identity.
     const geoms = [_][4]c_int{
         .{ 16, 8, 64, 32 }, // E, TOPK, KIN, N
         .{ 64, 8, 512, 2048 },
@@ -51991,9 +52062,14 @@ test "moe down+reduce fused: bit-identical to gatherQmv + multiply + sum (nvfp4 
 }
 
 fn moeDownReduceParityCase(s: mlx.mlx_stream, rnd: std.Random, t: anytype, E: usize, TOPK: c_int, KIN: c_int, N: c_int) !void {
-    for ([_]bool{ true, false }) |nvfp4| {
-        const bits: u32 = 4;
-        const gs: u32 = if (nvfp4) 16 else 32;
+    for ([_]struct { nvfp4: bool, bits: u32, gs: u32 }{
+        .{ .nvfp4 = true, .bits = 4, .gs = 16 },
+        .{ .nvfp4 = false, .bits = 4, .gs = 32 },
+        .{ .nvfp4 = false, .bits = 3, .gs = 64 },
+    }) |cfg| {
+        const nvfp4 = cfg.nvfp4;
+        const bits = cfg.bits;
+        const gs = cfg.gs;
         const words_per_row: usize = @intCast(@divExact(@as(u32, @intCast(KIN)) * bits, 32));
         const groups_per_row: usize = @intCast(@divExact(@as(u32, @intCast(KIN)), gs));
 
@@ -52079,7 +52155,64 @@ fn moeDownReduceParityCase(s: mlx.mlx_stream, rnd: std.Random, t: anytype, E: us
         const f3 = [_]c_int{ 1, 1, N };
         try mlx.check(mlx.mlx_reshape(&fused, fused_flat, &f3, 3, s));
 
-        try t.expectEqual(@as(f32, 0.0), try attn256MaxDiff(fused, composed, s));
+        // f32 truth: dequantized bank, the TOPK experts, f32 matmul, f32 weighted sum.
+        var deq32 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(deq32);
+        const null_bi = mlx.mlx_array{ .ctx = null };
+        try mlx.check(mlx.mlx_dequantize(&deq32, w, sc, if (nvfp4) null_bi else bi, mlx.mlx_optional_int.some(@intCast(gs)), mlx.mlx_optional_int.some(@intCast(bits)), if (nvfp4) "nvfp4" else "affine", .{ .ctx = null }, .{ .value = .float32, .has_value = true }, s));
+        var sel = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(sel);
+        try mlx.check(mlx.mlx_take_axis(&sel, deq32, inds, 0, s));
+        var x32 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(x32);
+        try mlx.check(mlx.mlx_astype(&x32, x, .float32, s));
+        var x3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(x3);
+        const x3s = [_]c_int{ TOPK, KIN, 1 };
+        try mlx.check(mlx.mlx_reshape(&x3, x32, &x3s, 3, s));
+        var prod = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(prod);
+        try mlx.check(mlx.mlx_matmul(&prod, sel, x3, s));
+        var sc32 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(sc32);
+        try mlx.check(mlx.mlx_astype(&sc32, scores, .float32, s));
+        var sc3 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(sc3);
+        const sc3s = [_]c_int{ TOPK, 1, 1 };
+        try mlx.check(mlx.mlx_reshape(&sc3, sc32, &sc3s, 3, s));
+        var wprod = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(wprod);
+        try mlx.check(mlx.mlx_multiply(&wprod, prod, sc3, s));
+        var truth_n = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(truth_n);
+        try mlx.check(mlx.mlx_sum_axis(&truth_n, wprod, 0, false, s));
+        var truth = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(truth);
+        try mlx.check(mlx.mlx_reshape(&truth, truth_n, &f3, 3, s));
+
+        const cnt: usize = @intCast(N);
+        const hf = try t.allocator.alloc(f32, cnt);
+        defer t.allocator.free(hf);
+        const hc = try t.allocator.alloc(f32, cnt);
+        defer t.allocator.free(hc);
+        const ht = try t.allocator.alloc(f32, cnt);
+        defer t.allocator.free(ht);
+        try testReadF32(fused, hf, s);
+        try testReadF32(composed, hc, s);
+        try testReadF32(truth, ht, s);
+        var se_f: f64 = 0;
+        var se_c: f64 = 0;
+        for (hf, hc, ht) |a, b, c| {
+            try t.expect(std.math.isFinite(a));
+            se_f += (a - c) * (a - c);
+            se_c += (b - c) * (b - c);
+        }
+        const rms_f = @sqrt(se_f / @as(f64, @floatFromInt(cnt)));
+        const rms_c = @sqrt(se_c / @as(f64, @floatFromInt(cnt)));
+        t.expect(rms_f <= rms_c * 1.15 + 1e-6) catch |e| {
+            std.debug.print("\n[down-reduce] nvfp4={} bits={d} gs={d} K={d} N={d} fused_rms={e:.4} composed_rms={e:.4}\n", .{ nvfp4, bits, gs, KIN, N, rms_f, rms_c });
+            return e;
+        };
     }
 }
 
