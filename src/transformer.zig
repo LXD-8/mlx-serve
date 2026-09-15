@@ -2776,8 +2776,8 @@ pub fn qsaBatchedGatherOn(seq_len: c_int, any_mrope: bool) bool {
     return qsaVerifyGatherEnabled();
 }
 
-pub fn qsaBatchedGatherFloor(seq_len: c_int) c_int {
-    if (seq_len >= 2) return @max(qsaGatherMinKv(), qsaVerifyGatherMinKv());
+pub fn qsaBatchedGatherFloor(seq_len: c_int, quantized: bool) c_int {
+    if (seq_len >= 2) return @max(qsaGatherMinKv(), qsaVerifyGatherMinKvFor(quantized));
     return qsaGatherMinKv();
 }
 
@@ -4977,7 +4977,7 @@ pub fn warmQsaEnvCaches() void {
     _ = qsaDecodeGatherEnabled();
     _ = qsaHistoryShareEnabled();
     _ = qsaVerifyGatherEnabled();
-    _ = qsaVerifyGatherMinKv();
+    _ = qsaVerifyGatherMinKvFor(false);
     _ = qsaSelectEnabledWarm();
     _ = qsaSelectSplitEnabled();
     _ = qsaSelectTg();
@@ -5863,22 +5863,43 @@ pub fn qsaVerifyGatherEnabled() bool {
 }
 
 /// The union is FIXED-size (S * budget blocks): at the production budget
-/// (512 blocks of 4) S=7 is 14336 rows, so below ~16k keys the union is most
-/// of the cache and the dense mask arm — which reads each key once — wins.
-/// MLX_SERVE_QSA_VERIFY_GATHER_MIN_KV.
-pub const QSA_VERIFY_GATHER_MIN_KV_DEFAULT: c_int = 16384;
+/// (512 blocks of 4) S=7 is 14336 rows. On dense KV the gather COPIES those
+/// rows while the mask arm reads the cache in place, so the copy only pays
+/// once the union is well under half the cache (M4 Max, S=7: gather loses 7%
+/// at 17k keys, breaks even at 34k). Quantized KV dequantizes only the
+/// gathered rows, so its floor stays lower. MLX_SERVE_QSA_VERIFY_GATHER_MIN_KV
+/// sets ONE floor for both.
+pub const QSA_VERIFY_GATHER_MIN_KV_DENSE: c_int = 32768;
+pub const QSA_VERIFY_GATHER_MIN_KV_QUANT: c_int = 16384;
 var qsa_verify_gather_min_kv_cached: ?c_int = null;
 pub var qsa_verify_gather_min_kv_override: ?c_int = null;
 
-pub fn qsaVerifyGatherMinKv() c_int {
+pub fn qsaVerifyGatherMinKvFor(quantized: bool) c_int {
     if (qsa_verify_gather_min_kv_override) |v| return v;
     if (qsa_verify_gather_min_kv_cached) |v| return v;
-    var v: c_int = QSA_VERIFY_GATHER_MIN_KV_DEFAULT;
     if (std.c.getenv("MLX_SERVE_QSA_VERIFY_GATHER_MIN_KV")) |raw| {
-        v = std.fmt.parseInt(c_int, std.mem.sliceTo(raw, 0), 10) catch v;
+        if (std.fmt.parseInt(c_int, std.mem.sliceTo(raw, 0), 10)) |v| {
+            qsa_verify_gather_min_kv_cached = v;
+            return v;
+        } else |_| {}
     }
-    qsa_verify_gather_min_kv_cached = v;
-    return v;
+    return if (quantized) QSA_VERIFY_GATHER_MIN_KV_QUANT else QSA_VERIFY_GATHER_MIN_KV_DENSE;
+}
+
+test "qsa verify gather floor: dense KV 32768, quantized 16384, override wins" {
+    const prev_o = qsa_verify_gather_min_kv_override;
+    const prev_c = qsa_verify_gather_min_kv_cached;
+    defer {
+        qsa_verify_gather_min_kv_override = prev_o;
+        qsa_verify_gather_min_kv_cached = prev_c;
+    }
+    qsa_verify_gather_min_kv_override = null;
+    qsa_verify_gather_min_kv_cached = null;
+    try std.testing.expectEqual(@as(c_int, 32768), qsaVerifyGatherMinKvFor(false));
+    try std.testing.expectEqual(@as(c_int, 16384), qsaVerifyGatherMinKvFor(true));
+    qsa_verify_gather_min_kv_override = 4096;
+    try std.testing.expectEqual(@as(c_int, 4096), qsaVerifyGatherMinKvFor(false));
+    try std.testing.expectEqual(@as(c_int, 4096), qsaVerifyGatherMinKvFor(true));
 }
 
 /// Geometry of the verify-width QSA gather — pure arithmetic, the ONE owner
@@ -6157,7 +6178,7 @@ pub fn qsaVerifyGatherAttn(
     if (ks[3] != head_dim) return dq.no(.geometry);
     const vs = mlx.getShape(kv_view.v);
     if (vs.len != 4 or vs[0] != 1 or vs[1] != h_kv or vs[2] != kv or vs[3] != head_dim) return dq.no(.geometry);
-    if (kv <= qsaVerifyGatherMinKv()) return dq.no(.kv_floor);
+    if (kv <= qsaVerifyGatherMinKvFor(kv_view.k_triple_q.ctx != null)) return dq.no(.kv_floor);
 
     const geom = QsaVerifyGeom.compute(seq_len, kv, ratio, kb) orelse return dq.no(.width);
     if (geom.k_blocks <= 0 or geom.rows <= 0 or geom.rows >= kv) return dq.no(.no_win);
@@ -21226,7 +21247,7 @@ pub const Transformer = struct {
         // higher than the prefill/decode one — the union is fixed-size.
         const want_blocks = batch == 1 and kv > qsaGatherMinKv() and qsaGatherEnabled() and
             (seq_len >= FUSED256_MIN_Q_LEN or (seq_len == 1 and qsaDecodeGatherEnabled()) or
-                (seq_len >= 2 and seq_len < FUSED256_MIN_Q_LEN and qsaVerifyGatherEnabled() and kv > qsaVerifyGatherMinKv()));
+                (seq_len >= 2 and seq_len < FUSED256_MIN_Q_LEN and qsaVerifyGatherEnabled() and kv > qsaVerifyGatherMinKvFor(ctx.cache.config.scheme != .off)));
         if (want_blocks) {
             // Prefill: sorted per-row block indices for the gather kernel;
             // the dense [S, kv] mask is never built. Decode (S==1): the same
@@ -51690,7 +51711,7 @@ test "qsa sparse attn: the width gate, the kill switch and the quant preconditio
     }
     // A dense cache past the verify floor (16384): `qsaVerifyGatherAttn` serves.
     {
-        const big_kv: c_int = 20000;
+        const big_kv: c_int = QSA_VERIFY_GATHER_MIN_KV_DENSE + 4000;
         const kbig = try attn256RandBf16(rnd, &[_]c_int{ 1, 2, big_kv, 256 }, s);
         defer _ = mlx.mlx_array_free(kbig);
         const vbig = try attn256RandBf16(rnd, &[_]c_int{ 1, 2, big_kv, 256 }, s);
@@ -51784,7 +51805,7 @@ test "qsa verify gather: the S=2..15 branch is reachable from the selection arm"
     const stmt_end = std.mem.indexOfPos(u8, src, at, ";") orelse src.len;
     const stmt = src[at..stmt_end];
     const verify_gate = "qsaVerify" ++ "GatherEnabled()";
-    const verify_min = "qsaVerify" ++ "GatherMinKv()";
+    const verify_min = "qsaVerify" ++ "GatherMinKvFor(";
     if (std.mem.indexOf(u8, stmt, verify_gate) == null) return error.SelectionArmMissesVerifyWidths;
     if (std.mem.indexOf(u8, stmt, verify_min) == null) return error.SelectionArmMissesVerifyFloor;
 
