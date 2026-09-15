@@ -3998,6 +3998,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
                 1 << 20,
                 cfg.has_sliding_window,
                 cfg.isMoe(),
+                cfg.longCtxGated(),
                 pinned,
             ));
             xfm_ptr.buildAnePrefill(sch.io, chunk, ane_mod.splitShare(), params.ane_headroom_resolver);
