@@ -13,7 +13,7 @@
 - **Structured output can think first.** A request with a JSON schema no longer has thinking switched off: the model reasons, then writes the JSON, on every format we serve (think tags, Gemma channels, Inkling, Harmony, Muse). A stray tag inside a JSON string stays data. (#407, thanks @perretv)
 - **Models unload themselves when idle.** `--idle-evict-secs N` (Settings > Server > "Unload idle models", off by default) hands a model's memory back after N seconds without a request; the next request loads it again. (#398, thanks @latent-variable)
 - **K2-Horizon 7B (IFM) runs natively.** `mlx-serve pull k2` fetches the 6-bit pack; thinking is on by default at all three effort levels, JSON schema with thinking, tool calls (including parameterless ones) and the 512k window work. Models whose only chat terminator is declared in `generation_config.json` now stop where they should.
-- **`top_k: 1` and `top_p` near 0 are greedy again on tied logits.** Both filters cut by rank now; a bf16 tie at the top used to keep every tied token and sample among them.
+- **`top_k: 1` and `top_p` near 0 are greedy again on tied logits, and sampling with `top_k` set is cheaper.** Both filters cut by rank now; a bf16 tie at the top used to keep every tied token and sample among them. With `top_k` the sampler no longer ranks the whole vocabulary on every token, and the `top_p` nucleus is accumulated in f32 instead of the model's own precision.
 - **Spark-X2.5 (XHToken, 1.7B and 4B) runs natively.** `mlx-serve pull spark` fetches the 4B pack; thinking, tool calls and 1M context all work.
 - **FLUX.2 klein base takes a negative prompt.** The undistilled 9B "base" checkpoint needs classifier-free guidance; `guidance_scale` and `negative_prompt` now drive it. The distilled klein packs are unaffected. (#298)
 - **OpenCode 2 gets a live dashboard.** `mlx-serve launch opencode2` installs a monitor plugin that shows tokens per second, memory, model and a prompt-processing progress bar in the sidebar and footer. Needs `--metrics`, which the app turns on for you. (#387, #396, @beamivalice)
@@ -30,7 +30,6 @@
 - `--ssm-checkpoint-max` defaults to 16 (was 32).
 - The measured speculative-decoding cost table is no longer saved across restarts by default; `MLX_SERVE_ROUND_COST_PERSIST=1` keeps it.
 - The Neural Engine compile cache is capped by free space on the internal disk, so a full disk no longer ships a half-built offload.
-- Sampling with `top_k` set no longer ranks the whole vocabulary on every token, and the nucleus `top_p` keeps is computed exactly rather than in the model's own reduced precision.
 - Embedded engines updated: llama.cpp to v0.4.0 (b10809) and ds4 to the September 14 head. ds4's own GGUFs for DeepSeek V4.1 Flash, GLM 5.3 Flash and Qwen3.8 Flash Next now route to the ds4 engine instead of failing in llama.cpp.
 - GGUFs that carry their own MTP head (Qwen3.8 Flash Next, GLM 5.x on ds4) now speculate on both greedy and sampled requests (`--mtp`, default on; `--no-ds4-mtp` opts out): 35 to 47 tok/s on the Flash Next Q2 pack on an M4 Max.
 

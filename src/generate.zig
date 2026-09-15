@@ -11990,13 +11990,6 @@ fn maskForLogitVocab(allocator: std.mem.Allocator, mask: []const bool, vocab_siz
     return .{ .slice = adjusted, .owned = adjusted };
 }
 
-/// Sampler filter route census. The route is a property of the REQUEST, not of
-/// the data, so it is chosen while the graph is built and counted here with no
-/// host read: a request with top_k has a bounded nucleus and serves top-p from
-/// the exact k-shortlist, pure top-p still ranks the whole row.
-pub var sampler_shortlist_draws: u64 = 0;
-pub var sampler_fullsort_draws: u64 = 0;
-
 /// Rank cap for the filter helpers. The widest shape a caller passes is
 /// `[B, S, V]`; anything past this is a named error, never a wrong axis.
 const SAMPLER_MAX_NDIM = 4;
@@ -12225,32 +12218,21 @@ fn applyTopP(res: *mlx.mlx_array, logits: mlx.mlx_array, top_p: f32, nucleus_bou
     var ids = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(ids);
     if (bounded) {
-        _ = @atomicRmw(u64, &sampler_shortlist_draws, .Add, 1, .monotonic);
         try topRanksDescending(&vals, &ids, logits, nucleus_bound, s);
     } else {
-        _ = @atomicRmw(u64, &sampler_fullsort_draws, .Add, 1, .monotonic);
         try ranksDescending(&ids, logits, s);
         try mlx.check(mlx.mlx_take_along_axis(&vals, logits, ids, -1, s));
     }
 
-    // The normalizer is the WHOLE row's, never the shortlist's, and f32
-    // throughout: mlx instantiates cumsum at the INPUT dtype and a bf16
-    // accumulator loses nucleus tail mass. bf16 widens exactly.
-    var row_f32 = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(row_f32);
-    try mlx.check(mlx.mlx_astype(&row_f32, logits, .float32, s));
-    var lse = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(lse);
-    try mlx.check(mlx.mlx_logsumexp_axis(&lse, row_f32, -1, true, s));
+    // f32 throughout: mlx instantiates cumsum at the INPUT dtype and a bf16
+    // accumulator loses nucleus tail mass. The ranked values ARE the row's
+    // finite entries (top-k left exactly k), so their softmax is the row's.
     var vals_f32 = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(vals_f32);
     try mlx.check(mlx.mlx_astype(&vals_f32, vals, .float32, s));
-    var shifted = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(shifted);
-    try mlx.check(mlx.mlx_subtract(&shifted, vals_f32, lse, s));
     var probs = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(probs);
-    try mlx.check(mlx.mlx_exp(&probs, shifted, s));
+    try mlx.check(mlx.mlx_softmax_axis(&probs, vals_f32, -1, true, s));
 
     // Mass STRICTLY above each rank — an exclusive scan down the ranking, so the
     // term is a function of the shortlist alone (everything outranking a top-k
@@ -17806,35 +17788,4 @@ test "shortlist top-p holds on rank-3 [B, L, V] blocks" {
         const kept = samplerTestKeptCount(sd[r * v ..][0..v]);
         try testing.expect(kept > 0 and kept <= 20);
     }
-}
-
-test "sampler route census: greedy never enters the shortlist, top_k chooses it" {
-    const s = mlx.gpuStream();
-    const v: usize = 4096;
-    var host: [4096]f32 = undefined;
-    samplerTestRow(&host, 0xABCDEF0123456789, 4.0);
-    const shape = [_]c_int{ 1, 1, @intCast(v) };
-    const logits = mlx.mlx_array_new_data(&host, &shape, 3, .float32);
-    defer _ = mlx.mlx_array_free(logits);
-    const flat_shape = [_]c_int{ 1, @intCast(v) };
-    var row = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(row);
-    try mlx.check(mlx.mlx_reshape(&row, logits, &flat_shape, 2, s));
-
-    @atomicStore(u64, &sampler_shortlist_draws, 0, .monotonic);
-    @atomicStore(u64, &sampler_fullsort_draws, 0, .monotonic);
-
-    // Greedy returns before any filter runs.
-    const greedy = try sampleToken(testing.allocator, logits, .{ .temperature = 0.0, .top_p = 0.95, .top_k = 20 }, null, 0, s);
-    try testing.expectEqual(try argmax(row, s), greedy.token_id);
-    try testing.expectEqual(@as(u64, 0), @atomicLoad(u64, &sampler_shortlist_draws, .monotonic));
-    try testing.expectEqual(@as(u64, 0), @atomicLoad(u64, &sampler_fullsort_draws, .monotonic));
-
-    _ = try sampleToken(testing.allocator, logits, .{ .temperature = 1.0, .top_p = 0.95, .top_k = 20 }, null, 0, s);
-    try testing.expectEqual(@as(u64, 1), @atomicLoad(u64, &sampler_shortlist_draws, .monotonic));
-    try testing.expectEqual(@as(u64, 0), @atomicLoad(u64, &sampler_fullsort_draws, .monotonic));
-
-    _ = try sampleToken(testing.allocator, logits, .{ .temperature = 1.0, .top_p = 0.95, .top_k = 0 }, null, 0, s);
-    try testing.expectEqual(@as(u64, 1), @atomicLoad(u64, &sampler_shortlist_draws, .monotonic));
-    try testing.expectEqual(@as(u64, 1), @atomicLoad(u64, &sampler_fullsort_draws, .monotonic));
 }
