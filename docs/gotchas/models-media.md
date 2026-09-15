@@ -1778,7 +1778,7 @@ Two things learned on the way:
 - **No env var for an obvious win.** The first cut shipped a `MLX_SERVE_CONV3D_CHUNK=0` kill switch out of habit. It bought one A/B (the 67 GB number above) and one bug: `maxInt(u32)` handed to a `c_int` is `-1`, and the "off" arm ran a window of −1 frames and killed the server with an MLX shape error. Chunking is exact and free, so nobody ever wants the other arm; the switch is gone. Levers are for paths with two arms worth comparing (lossy or tradeoff perf), not for fixes.
 - **The 128 GB box that "could not reproduce" was the right box to MEASURE on.** The failure is a peak, and `/props` `peak_bytes` after a gen reports it whether or not the box survived — a 30 GB delta is a reproduction.
 
-H3's VAE convs match the same gate but its decoder is already chunked by reference semantics (17-frame clips, 256-px spatial tiles), so its per-conv transient stays inside the H3 activation bill. `upConv3d` passes temporal pad 1 and never hits the decomposition; the LTX encoder is single-frame.
+H3's VAE convs match the same gate too, and "chunked by reference semantics" turned out not to be enough (#424, 26.8.11 through 26.9.2): the encoder slices a reference video into 17-frame clips and 256-px tiles but built ONE lazy graph over all of them, evaluated once after the last tile. A 480x640 124-frame reference is 8 clips x 6 tiles = 48 encoder passes, and MLX's eval keeps ~10 command buffers in flight, each holding its convs' tap copies and Winograd working sets until completion, so the transient stacked past the wired limit. The tell is `kIOGPUCommandBufferCallbackErrorInvalidResource` (residency, not a malloc failure) right after `prompt -> N tokens`, with images and audio still fine. Fix: `encodeMoments` evaluates its output, one barrier per tile pass, nothing else changes; the tiled parity case is unchanged at cos 0.999998. `upConv3d` passes temporal pad 1 and never hits the decomposition; the LTX encoder is single-frame.
 
 ## A config-driven bound guarded only by a debug assert is unguarded in every shipped binary (qwen4_exp, PR #363)
 
@@ -1859,5 +1859,32 @@ Three things were not the arch:
 Bar: HF `tokenizers` byte-identical ids on numbers, code, CJK, contractions
 and the markers; greedy answers with thinking on/off, effort low, tool calls
 (plain and streamed with thinking), tool-result history, JSON schema and the
-Anthropic surface on the 6-bit pack. Known gap: JSON schema + thinking has no
-atomic `</think>` to recover through, so it keeps thinking off.
+Anthropic surface on the 6-bit pack.
+
+Two more came out of the first llmprobe run (all cells failing were ours):
+
+- Thinking default. The template opens a think marker on EVERY assistant
+  turn and the pack declares no `generation_config` default, so
+  `defaultEnableThinking` answered false and the prompt closed the block.
+  llmprobe's probe saw a non-thinker and budgeted 8..192 tokens, while its
+  `reasoning_effort: medium` opted thinking back on — every cell ended
+  `[length]` with empty content. `k2_horizon` now defaults ON like
+  `bailing_hybrid`; thinking-off is still the committed closer.
+- JSON schema + thinking. The protocol resolves its closer from the DECODED
+  prompt tail, which the alias turns into `<think>`; `</think>` has no atomic
+  id here and its byte matcher fired on a literal `</think>` the model wrote
+  INSIDE its reasoning (it was quoting the schema), so the grammar engaged
+  mid-thought and the model idled on whitespace. `Tokenizer.markerCloserFor`
+  pairs each opener id with its closer; `resolveReasoningProtocol` reads the
+  prompt's last opener token and sets the closer TEXT to the pack's own
+  spelling, so the marker lookup finds the atomic id and no byte spelling is a
+  boundary. Guards: `tests/test_json_schema_protocol_routing.py` on the pack.
+- A GLM call to a parameterless tool (`<tool_call>list_files</tool_call>`)
+  has no `<arg_key>`, the one signal the GLM route keyed on; it fell to the
+  Hermes path and vanished, so every agentic cell read "never used a tool".
+  A bare-identifier body routes to the GLM parser (corpus entry `[k2]`).
+
+Not ours: `top_p` near 0 samples among EXACT bf16 logit ties (three tokens at
+-1.421875 on the band-name prompt) because the nucleus keeps ties by value;
+llmprobe reads that as "top_p not honored". A rank-based nucleus would fix it
+for every model — a sampler decision, not a K2 one.
