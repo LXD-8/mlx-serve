@@ -22,7 +22,7 @@
 
 - New app icon. The tray footer is four tiles like the media row, and the power glyph is a red Quit.
 - The launcher offers a plain Shell beside the coding agents, on this Mac and in the sandbox.
-- Terminals open on click, using the working folder from Settings instead of asking first.
+- A plain Shell terminal opens on click in the working folder from Settings; the coding agents (pi, opencode, Claude Code, …) ask which folder to work in.
 - `--mtp-head-kv-quant` lets Flash Next's speculative head store its cache at the model's `--kv-quant` precision, about 1 GB saved at 1M tokens with no measurable loss in acceptance. Off by default.
 - `--ssm-checkpoint-max` defaults to 16 (was 32).
 - The measured speculative-decoding cost table is no longer saved across restarts by default; `MLX_SERVE_ROUND_COST_PERSIST=1` keeps it.

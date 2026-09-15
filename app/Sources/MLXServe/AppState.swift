@@ -372,15 +372,18 @@ class AppState: ObservableObject {
         pendingChatOpenTick += 1
     }
 
-    /// Start a sandbox terminal (pi / hermes, or a plain shell for nil) in the
-    /// default working folder, hot-mounted into the guest. The folder is the
-    /// Settings one — a terminal opens on click, it does not interrogate.
+    /// Start a sandbox terminal (pi / hermes, or a plain shell for nil),
+    /// hot-mounted into the guest. A coding agent asks which folder it works
+    /// in; a plain shell opens on click in the Settings folder.
     /// The ONE door for every "… in Sandbox" entry (tray, chip, sidebar).
     func startTerminal(agentId: String?) {
         let agent = SandboxAgentRegistry.all.first { $0.id == agentId }
+        // Every caller is a MENU item. A modal panel run inside the menu's own
+        // click handler races the menu's dismissal and sometimes never shows,
+        // so the picker opens one run-loop turn later, once the menu is gone.
         DispatchQueue.main.async { [self] in
-            showTerminal(terminals.start(agent: agent,
-                                         workspace: ChatSession.defaultWorkingDirectory))
+            guard let workspace = terminalWorkspace(askingFor: agent?.displayName) else { return }
+            showTerminal(terminals.start(agent: agent, workspace: workspace))
         }
     }
 
@@ -389,9 +392,25 @@ class AppState: ObservableObject {
     /// Terminal.app is no longer involved.
     func startTerminal(hostCLI cli: LauncherCLI) {
         DispatchQueue.main.async { [self] in
-            showTerminal(terminals.startHost(cli: cli,
-                                             workspace: ChatSession.defaultWorkingDirectory))
+            guard let workspace = terminalWorkspace(askingFor: cli == .shell ? nil : cli.displayName) else { return }
+            showTerminal(terminals.startHost(cli: cli, workspace: workspace))
         }
+    }
+
+    /// The folder a new terminal opens in: the Settings default for a plain
+    /// shell (nil name), a picker for a coding agent. nil = the user cancelled.
+    private func terminalWorkspace(askingFor name: String?) -> String? {
+        guard let name else { return ChatSession.defaultWorkingDirectory }
+        let panel = OpenPanel.make()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: ChatSession.defaultWorkingDirectory)
+        panel.message = "Choose the folder \(name) works in"
+        panel.prompt = "Open Terminal"
+        guard AppActivation.runModal(panel) == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 
     /// Close a terminal row (terminating a live session) and leave its pane.
