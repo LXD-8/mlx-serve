@@ -11992,101 +11992,79 @@ fn maskForLogitVocab(allocator: std.mem.Allocator, mask: []const bool, vocab_siz
 
 /// Apply top-k filtering: keep only the top k logits, set the rest to -inf.
 fn applyTopK(res: *mlx.mlx_array, logits: mlx.mlx_array, k: u32, s: mlx.mlx_stream) !void {
-    // Per-ROW top-k. `mlx_topk` (no axis) flattens, which is indistinguishable
-    // from the right answer for the [1, V] rows every caller passed until the
-    // draft block arrived: on [m, V] it returns the k largest of the WHOLE
-    // block, so one row's cutoff masks every other row to -inf and softmax
-    // hands back NaN. A reduction helper that has only ever seen one row
-    // cannot reveal an axis bug.
-    var topk_vals = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(topk_vals);
-    try mlx.check(mlx.mlx_topk_axis(&topk_vals, logits, @intCast(k), -1, s));
+    // Per-ROW top-k by RANK: the k largest indices from argpartition, scattered
+    // back as a keep mask. A value cutoff (`logits >= kth largest`) keeps every
+    // token tied with the k-th, and bf16 logits tie at the top constantly on a
+    // 250k vocab — top_k 1 stopped being greedy. `mlx_topk` (no axis) flattens
+    // a [m, V] block, so everything here is axis -1.
+    const shape = mlx.getShape(logits);
+    const vocab: c_int = shape[shape.len - 1];
+    const kk: c_int = @intCast(@min(k, @as(u32, @intCast(vocab))));
+    var neg = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(neg);
+    try mlx.check(mlx.mlx_negative(&neg, logits, s));
+    var order = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(order);
+    try mlx.check(mlx.mlx_argpartition_axis(&order, neg, kk - 1, -1, s));
+    var start = [_]c_int{ 0, 0, 0, 0 };
+    var stop = [_]c_int{ 0, 0, 0, 0 };
+    var strides = [_]c_int{ 1, 1, 1, 1 };
+    for (shape, 0..) |d, i| stop[i] = d;
+    stop[shape.len - 1] = kk;
+    var top_idx = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(top_idx);
+    try mlx.check(mlx.mlx_slice(&top_idx, order, &start, shape.len, &stop, shape.len, &strides, shape.len, s));
+    try keepByIndex(res, logits, top_idx, s);
+}
 
-    // Get the minimum of the top-k values (the k-th largest) as cutoff
-    var cutoff = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(cutoff);
-    try mlx.check(mlx.mlx_min_axis(&cutoff, topk_vals, -1, true, s));
-
-    // Mask: logits >= cutoff
+/// Mask `logits` to -inf everywhere except the per-row `keep_idx` columns.
+fn keepByIndex(res: *mlx.mlx_array, logits: mlx.mlx_array, keep_idx: mlx.mlx_array, s: mlx.mlx_stream) !void {
+    const shape = mlx.getShape(logits);
+    var zeros = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(zeros);
+    try mlx.check(mlx.mlx_zeros(&zeros, shape.ptr, shape.len, .bool_, s));
+    const t = mlx.mlx_array_new_bool(true);
+    defer _ = mlx.mlx_array_free(t);
     var mask = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(mask);
-    try mlx.check(mlx.mlx_greater_equal(&mask, logits, cutoff, s));
-
-    // Replace masked-out logits with -inf
+    try mlx.check(mlx.mlx_put_along_axis(&mask, zeros, keep_idx, t, -1, s));
     const neg_inf = mlx.mlx_array_new_float(-std.math.inf(f32));
     defer _ = mlx.mlx_array_free(neg_inf);
     try mlx.check(mlx.mlx_where(res, mask, logits, neg_inf, s));
 }
 
 /// Apply top-p (nucleus) sampling: mask logits outside the top-p probability mass.
-/// Works on the original (unsorted) logits by computing which tokens to keep.
+/// The nucleus is decided in sorted space and scattered back by index, so a
+/// token tied with the cutoff value but outside the mass is masked (top_p -> 0
+/// is greedy even on tied bf16 logits).
 fn applyTopP(res: *mlx.mlx_array, logits: mlx.mlx_array, top_p: f32, s: mlx.mlx_stream) !void {
-    // Sort logits ascending to get sorted probabilities
+    // Ascending order: smallest probs first, cumsum reaches 1 at the argmax.
+    var order = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(order);
+    try mlx.check(mlx.mlx_argsort_axis(&order, logits, -1, s));
     var sorted_logits = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(sorted_logits);
-    try mlx.check(mlx.mlx_sort_axis(&sorted_logits, logits, -1, s));
-
-    // Softmax of sorted logits (ascending order: smallest probs first)
+    try mlx.check(mlx.mlx_take_along_axis(&sorted_logits, logits, order, -1, s));
     var sorted_probs = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(sorted_probs);
     try mlx.check(mlx.mlx_softmax_axis(&sorted_probs, sorted_logits, -1, true, s));
-
-    // Cumulative sum from smallest to largest
     var cumsum = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(cumsum);
     try mlx.check(mlx.mlx_cumsum(&cumsum, sorted_probs, -1, false, true, s));
-
-    // Find the cutoff: tokens where cumsum <= (1 - top_p) are outside the nucleus
+    // In the nucleus: cumsum > 1 - top_p (the argmax always is).
     const threshold = mlx.mlx_array_new_float(1.0 - top_p);
     defer _ = mlx.mlx_array_free(threshold);
-
-    var outside_mask = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(outside_mask);
-    try mlx.check(mlx.mlx_less_equal(&outside_mask, cumsum, threshold, s));
-
-    // Set outside-nucleus logits to -inf in sorted space
-    const neg_inf = mlx.mlx_array_new_float(-std.math.inf(f32));
-    defer _ = mlx.mlx_array_free(neg_inf);
-
-    // where(outside_mask, -inf, sorted_logits) — mask out the low-prob tokens
-    try mlx.check(mlx.mlx_where(res, outside_mask, neg_inf, sorted_logits, s));
-
-    // Note: categorical sampling doesn't care about token ordering,
-    // but the sampled index will be in sorted space. We need to unsort.
-    // Since categorical returns an index into the logits array, and we want
-    // the original vocab index, we need to work in original space instead.
-
-    // Better approach: find the minimum logit value that's in the nucleus,
-    // then mask original logits below that threshold.
-    _ = mlx.mlx_array_free(res.*);
-    res.* = mlx.mlx_array_new();
-
-    // The cutoff logit is the smallest logit still in the nucleus.
-    // In sorted (ascending) order, tokens with cumsum > (1-top_p) are in nucleus.
-    // The first such token's logit value is our threshold.
-    // We can achieve this by: where(cumsum > 1-top_p, sorted_logits, +inf) then take min
     var in_nucleus = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(in_nucleus);
     try mlx.check(mlx.mlx_greater(&in_nucleus, cumsum, threshold, s));
-
-    const pos_inf = mlx.mlx_array_new_float(std.math.inf(f32));
-    defer _ = mlx.mlx_array_free(pos_inf);
-
-    var nucleus_logits = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(nucleus_logits);
-    try mlx.check(mlx.mlx_where(&nucleus_logits, in_nucleus, sorted_logits, pos_inf, s));
-
-    // Min value = the cutoff
-    var min_val = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(min_val);
-    try mlx.check(mlx.mlx_min_axis(&min_val, nucleus_logits, -1, true, s));
-
-    // Mask original logits: keep if >= cutoff, else -inf
-    var keep_mask = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(keep_mask);
-    try mlx.check(mlx.mlx_greater_equal(&keep_mask, logits, min_val, s));
-
-    try mlx.check(mlx.mlx_where(res, keep_mask, logits, neg_inf, s));
+    const shape = mlx.getShape(logits);
+    var mask = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(mask);
+    try mlx.check(mlx.mlx_zeros(&mask, shape.ptr, shape.len, .bool_, s));
+    try mlx.check(mlx.mlx_put_along_axis(&mask, mask, order, in_nucleus, -1, s));
+    const neg_inf = mlx.mlx_array_new_float(-std.math.inf(f32));
+    defer _ = mlx.mlx_array_free(neg_inf);
+    try mlx.check(mlx.mlx_where(res, mask, logits, neg_inf, s));
 }
 
 /// Apply repeat penalty to already-generated tokens.
@@ -12568,6 +12546,37 @@ test "batched stacked seedless top_k top_p rows equal solo draws" {
     try testing.expectEqual(@as(u64, 1), sample_rows_evals);
     try testing.expectEqual(@as(i32, @intCast(solo0)), ids[0]);
     try testing.expectEqual(@as(i32, @intCast(solo1)), ids[1]);
+}
+
+test "top-k and top-p break exact ties by rank, not by value" {
+    // bf16 logits tie at the top constantly on a 250k vocab; a value cutoff
+    // keeps every tied token and top_k 1 / top_p -> 0 stop being greedy.
+    const s = mlx.gpuStream();
+    const data = [_]f32{
+        2.0, 5.0, 5.0, 5.0, 1.0,
+        0.1, 0.2, 9.0, 0.3, 0.4,
+    };
+    const shape = [_]c_int{ 2, 5 };
+    const logits = mlx.mlx_array_new_data(&data, &shape, 2, .float32);
+    defer _ = mlx.mlx_array_free(logits);
+    for ([_]bool{ true, false }) |use_k| {
+        var masked = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(masked);
+        if (use_k) try applyTopK(&masked, logits, 1, s) else try applyTopP(&masked, logits, 1e-6, s);
+        try mlx.check(mlx.mlx_array_eval(masked));
+        const out = mlx.mlx_array_data_float32(masked).?[0..10];
+        var kept0: usize = 0;
+        for (out[0..5]) |v| kept0 += @intFromBool(v != -std.math.inf(f32));
+        try testing.expectEqual(@as(usize, 1), kept0);
+        for (out[5..10], 0..) |v, i| try testing.expect((v != -std.math.inf(f32)) == (i == 2));
+    }
+    // A 3-of-5 top-k on the tied row keeps exactly the three tied tokens.
+    var masked3 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(masked3);
+    try applyTopK(&masked3, logits, 3, s);
+    try mlx.check(mlx.mlx_array_eval(masked3));
+    const out3 = mlx.mlx_array_data_float32(masked3).?[0..5];
+    for (out3, 0..) |v, i| try testing.expect((v != -std.math.inf(f32)) == (i >= 1 and i <= 3));
 }
 
 test "batched stacked seedless rows honour a suppress mask" {

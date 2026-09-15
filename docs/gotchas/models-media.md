@@ -1884,7 +1884,9 @@ Two more came out of the first llmprobe run (all cells failing were ours):
   Hermes path and vanished, so every agentic cell read "never used a tool".
   A bare-identifier body routes to the GLM parser (corpus entry `[k2]`).
 
-Not ours: `top_p` near 0 samples among EXACT bf16 logit ties (three tokens at
--1.421875 on the band-name prompt) because the nucleus keeps ties by value;
-llmprobe reads that as "top_p not honored". A rank-based nucleus would fix it
-for every model — a sampler decision, not a K2 one.
+- `top_p` near 0 and `top_k: 1` still sampled: both filters masked by VALUE
+  (`logit >= cutoff`), so every token tied with the cutoff survived, and bf16
+  logits tie at the top constantly (three tokens at -1.421875 on the
+  band-name prompt). `applyTopK` now keeps the k argpartition indices and
+  `applyTopP` decides the nucleus in argsort space and scatters the mask back
+  (`generate.zig`); non-tied rows mask identically. Every model, not K2.
