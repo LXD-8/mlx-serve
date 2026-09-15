@@ -92,6 +92,9 @@ pub const SpecDisableReason = enum {
     none,
     acceptance,
     max_ctx,
+    /// A thinking budget closed the thought through a plain forward; the spec
+    /// state is not resynced, the answer decodes regular.
+    think_bound,
     /// The measured round cost more per token than a measured serial token (`MtpAdaptive`).
     adaptive,
 };
@@ -571,7 +574,7 @@ pub const Constraint = struct {
 /// A forced recovery must leave room for the whole remaining transition AND
 /// at least one constrained answer token. At the ordinary completion cap the
 /// caller keeps the existing length-stop behavior — no reserve is created.
-fn forcedBoundaryCanContinue(completion_tokens: u32, max_tokens: u32, transition_tokens: usize) bool {
+pub fn forcedBoundaryCanContinue(completion_tokens: u32, max_tokens: u32, transition_tokens: usize) bool {
     return completion_tokens +| @as(u32, @intCast(transition_tokens)) + 1 <= max_tokens;
 }
 
@@ -666,6 +669,41 @@ pub const LogprobResult = struct {
     top_logprobs: []TokenLogprob, // top N alternatives (caller must free)
 };
 
+/// A thinking budget enforced while decoding: once `budget` tokens have been
+/// generated inside the think block, `forced` (an early-stop sentence, the
+/// pack's atomic closer, a separator) is committed through the model and the
+/// answer follows. Markers are single token ids, so only packs whose think
+/// tags are atomic tokens can be bound; `observe` walks the generated ids
+/// incrementally and `due` asks whether the tail is an open block at budget.
+pub const ThinkBound = struct {
+    budget: u32,
+    opener_id: ?u32,
+    closer_id: u32,
+    forced: []const u32,
+    in_think: bool,
+    count: u32 = 0,
+    cursor: usize = 0,
+    fired: bool = false,
+
+    pub fn observe(self: *ThinkBound, ids: []const u32) void {
+        while (self.cursor < ids.len) : (self.cursor += 1) {
+            const id = ids[self.cursor];
+            if (id == self.closer_id) {
+                self.in_think = false;
+            } else if (self.opener_id != null and id == self.opener_id.?) {
+                self.in_think = true;
+                self.count = 0;
+            } else if (self.in_think) {
+                self.count += 1;
+            }
+        }
+    }
+
+    pub fn due(self: *const ThinkBound) bool {
+        return !self.fired and self.in_think and self.count >= self.budget;
+    }
+};
+
 /// Sampling parameters for token generation.
 pub const SamplingParams = struct {
     temperature: f32 = 1.0,
@@ -680,6 +718,9 @@ pub const SamplingParams = struct {
     /// grammar at byte level. Forces a synchronous sampling path (no lazy
     /// pipeline) since grammar advancement requires the realized token id.
     constraint: ?*Constraint = null,
+    /// In-stream thinking budget (`ThinkBound`), owned by the request handler
+    /// like `constraint`; null = no bound.
+    think_bound: ?*ThinkBound = null,
     /// Reserved-token suppression mask: `[vocab]` bool, true = the sampler
     /// must never draw this id (reserved specials like `<|fim_hole|>`, which
     /// a degenerate distribution can rank top-5 at a collapsed position — a
@@ -3576,6 +3617,77 @@ pub const Generator = struct {
         };
         self.next_token_id = @intCast(val);
         return .{ .drained = token };
+    }
+
+    pub const ForcedCommit = struct {
+        /// Tokens emitted by this call: any pending token plus every forced
+        /// token but the last, which stays as `next_token_id` for the next
+        /// regular tick to publish.
+        emitted: []const u32,
+        stopped: bool,
+    };
+
+    /// Commit `forced` through the model as ONE multi-token forward, from any
+    /// of the three inter-tick states (pipelined, spec exit, shim-seeded), and
+    /// leave the generator in the shim-seeded state a regular `next()` reads.
+    /// The caller routes every later tick through the regular path.
+    pub fn commitForcedTokens(self: *Generator, allocator: std.mem.Allocator, forced: []const u32) !ForcedCommit {
+        std.debug.assert(forced.len > 0);
+        var emitted = std.ArrayList(u32).empty;
+        errdefer emitted.deinit(allocator);
+        var input = std.ArrayList(u32).empty;
+        defer input.deinit(allocator);
+
+        if (self.has_pending_token or self.has_pending_logits) {
+            // Pipelined or shim-seeded: `next_token_id` is in the cache, unpublished.
+            try self.resolvePendingToken();
+            if (try self.checkStop()) return .{ .emitted = try emitted.toOwnedSlice(allocator), .stopped = true };
+            try self.generated_ids.append(allocator, self.next_token_id);
+            try emitted.append(allocator, self.next_token_id);
+            self.advanceStep(1);
+            if (self.has_pending_logits) {
+                _ = mlx.mlx_array_free(self.pending_logits);
+                self.has_pending_logits = false;
+            }
+        } else {
+            // Spec exit: `next_token_id` is decided but not in the cache.
+            try input.append(allocator, self.next_token_id);
+            try self.generated_ids.append(allocator, self.next_token_id);
+            try emitted.append(allocator, self.next_token_id);
+            self.advanceStep(1);
+        }
+        try input.appendSlice(allocator, forced);
+        for (forced[0 .. forced.len - 1]) |f| {
+            try self.generated_ids.append(allocator, f);
+            try emitted.append(allocator, f);
+        }
+        self.advanceStep(@intCast(forced.len - 1));
+        self.consecutive_pad = 0;
+        self.loop_guard_start = self.generated_ids.items.len;
+
+        const ids_i32 = try allocator.alloc(i32, input.items.len);
+        defer allocator.free(ids_i32);
+        for (input.items, 0..) |t, i| ids_i32[i] = @intCast(t);
+        const shape = [_]c_int{ 1, @intCast(input.items.len) };
+        const tok_input = mlx.mlx_array_new_data(ids_i32.ptr, &shape, 2, .int32);
+        defer _ = mlx.mlx_array_free(tok_input);
+        const all_logits = try self.xfm.forwardWith(&self.ctx, tok_input);
+        defer _ = mlx.mlx_array_free(all_logits);
+        const shp = mlx.getShape(all_logits);
+        var logits = mlx.mlx_array_new();
+        const start = [_]c_int{ 0, shp[1] - 1, 0 };
+        const stop = [_]c_int{ shp[0], shp[1], shp[2] };
+        const strides = [_]c_int{ 1, 1, 1 };
+        try mlx.check(mlx.mlx_slice(&logits, all_logits, &start, 3, &stop, 3, &strides, 3, self.xfm.s));
+        const arr = [_]mlx.mlx_array{logits};
+        const vec = mlx.mlx_vector_array_new_data(&arr, 1);
+        _ = mlx.mlx_async_eval(vec);
+        _ = mlx.mlx_vector_array_free(vec);
+        self.pending_logits = logits;
+        self.has_pending_logits = true;
+        self.next_token_id = forced[forced.len - 1];
+        self.mtp_hidden_stale = true;
+        return .{ .emitted = try emitted.toOwnedSlice(allocator), .stopped = false };
     }
 
     /// Result of one `nextPld` step. Yields 1..=(1+max_draft_len) tokens.
@@ -11963,6 +12075,11 @@ pub const degenerate_loop_min_span: usize = 128;
 // code repeat a handful of times, not ten).
 pub const degenerate_loop_long_max_period: usize = 64;
 pub const degenerate_loop_long_reps: usize = 10;
+/// ...except when the "line" is a tile-map row (2026-09-15: a 27B wrote ten
+/// identical `"100000000000000000000001",` rows, a 28-token cycle, in an
+/// honest map file). The long tier also demands this much cycling: 37 such
+/// rows, or a 58-token sentence 18 times. A real loop still dies in ~13 s.
+pub const degenerate_loop_long_min_span: usize = 1024;
 
 // Tier 3 (2026-08-04 agent-traffic class): a restatement loop that VARIES its
 // phrasing has no exact cycle at any period, so both tiers above are blind by
@@ -12029,7 +12146,7 @@ fn DistinctSet(comptime cap: usize) type {
     };
 }
 
-/// The two-ratio judgement over ONE window-sized span. Split out so the trim
+/// The three-ratio judgement over ONE window-sized span. Split out so the trim
 /// search can slide the same window backwards without re-deriving the rule.
 fn nearRepeatWindowIsDegenerate(window: []const u32) bool {
     // Load factor 0.5 keeps the linear probe short even when every entry is
@@ -12058,25 +12175,31 @@ fn nearRepeatWindowIsDegenerate(window: []const u32) bool {
     // Requiring all THREE keeps the tier's reluctance in the direction that
     // matters — a missed loop still ends at max_tokens, a false cut destroys
     // work that was going fine.
+    return halfNovelty(window, near_repeat_ngram) <= near_repeat_max_novelty;
+}
+
+/// Share of the window's second-half distinct n-grams absent from its first
+/// half. 1.0 when the second half has no n-grams at all (nothing new because
+/// there is nothing) is the loop reading, so that case returns 0.
+fn halfNovelty(window: []const u32, n: usize) f32 {
     var first_half = DistinctSet(near_repeat_window * 2){};
     const mid = window.len / 2;
     var fi: usize = 0;
-    while (fi + near_repeat_ngram <= mid) : (fi += 1) {
-        _ = first_half.insert(gramHash(window[fi .. fi + near_repeat_ngram]));
+    while (fi + n <= mid) : (fi += 1) {
+        _ = first_half.insert(gramHash(window[fi .. fi + n]));
     }
     var second_half = DistinctSet(near_repeat_window * 2){};
     var novel: usize = 0;
     var distinct_second: usize = 0;
     var si: usize = mid;
-    while (si + near_repeat_ngram <= window.len) : (si += 1) {
-        const h = gramHash(window[si .. si + near_repeat_ngram]);
+    while (si + n <= window.len) : (si += 1) {
+        const h = gramHash(window[si .. si + n]);
         if (!second_half.insert(h)) continue; // count each distinct gram once
         distinct_second += 1;
         if (!first_half.contains(h)) novel += 1;
     }
-    if (distinct_second == 0) return true; // nothing new because there is nothing
-    const novelty = @as(f32, @floatFromInt(novel)) / @as(f32, @floatFromInt(distinct_second));
-    return novelty <= near_repeat_max_novelty;
+    if (distinct_second == 0) return 0;
+    return @as(f32, @floatFromInt(novel)) / @as(f32, @floatFromInt(distinct_second));
 }
 
 /// One hash for both the ratio pass and the novelty pass — two spellings of
@@ -12100,6 +12223,8 @@ pub fn isNearRepeatTailLoop(tokens: []const u32) bool {
 /// however long the loop ran — sizing a set to the FULL span instead would
 /// put tens of KB on the inference thread's stack.
 pub const near_repeat_step: usize = 128;
+/// Live 2026-09-15: a 27B wrote five 24x19 maps of identical rows in 2.8k tokens.
+pub const near_repeat_min_span: usize = 4096;
 pub const near_repeat_max_lookback: usize = 8192;
 
 /// A convicted degenerate tail: which tier saw it, and where the degenerate
@@ -12168,7 +12293,7 @@ pub fn degenerateTail(tokens: []const u32) ?DegenerateTail {
         degenerate_loop_max_period + 1,
         degenerate_loop_long_max_period,
         degenerate_loop_long_reps,
-        0,
+        degenerate_loop_long_min_span,
     )) |p| {
         return .{ .tier = .long_cycle, .start = trailingCycleStart(tokens, p) + p };
     }
@@ -12188,6 +12313,12 @@ pub fn degenerateTail(tokens: []const u32) ?DegenerateTail {
         if (!nearRepeatWindowIsDegenerate(tokens[cand .. cand + near_repeat_window])) break;
         start = cand;
     }
+    // A file of near-identical rows (a lazy tile map, a zero-heavy table)
+    // reads as a loop under every content measure; what it does that a loop
+    // never does is END. Convict only once the degenerate span has outrun any
+    // such file — a real restatement loop is still cut at ~4k tokens instead
+    // of max_tokens, and a false cut destroys work.
+    if (tokens.len - start < near_repeat_min_span) return null;
     return .{ .tier = .near_repeat, .start = start };
 }
 
@@ -13915,6 +14046,37 @@ test "isDegenerateTailLoop catches a repeated channel-opener cycle" {
     }
 }
 
+test "ThinkBound: counts only tokens inside the think block and fires at the budget" {
+    const OPEN: u32 = 10;
+    const CLOSE: u32 = 11;
+    const forced = [_]u32{ 30, 31, CLOSE, 32 };
+    var tb = ThinkBound{ .budget = 3, .opener_id = OPEN, .closer_id = CLOSE, .forced = &forced, .in_think = false };
+
+    // Content before any opener never counts.
+    tb.observe(&[_]u32{ 1, 2, 3, 4, 5 });
+    try testing.expect(!tb.due());
+
+    // Opened by the model: the budget counts from the opener.
+    tb.observe(&[_]u32{ 1, 2, 3, 4, 5, OPEN, 6, 7 });
+    try testing.expect(!tb.due());
+    tb.observe(&[_]u32{ 1, 2, 3, 4, 5, OPEN, 6, 7, 8 });
+    try testing.expect(tb.due());
+
+    // A model that closed on its own is never forced.
+    var closed = ThinkBound{ .budget = 3, .opener_id = OPEN, .closer_id = CLOSE, .forced = &forced, .in_think = true };
+    closed.observe(&[_]u32{ 6, 7, CLOSE, 8, 9, 10, 11 });
+    try testing.expect(!closed.due());
+
+    // Prompt-opened: the count starts at token 0 and the forced closer ends it.
+    var po = ThinkBound{ .budget = 2, .opener_id = null, .closer_id = CLOSE, .forced = &forced, .in_think = true };
+    po.observe(&[_]u32{ 6, 7 });
+    try testing.expect(po.due());
+    po.fired = true;
+    po.observe(&[_]u32{ 6, 7, 30, 31, CLOSE, 32, 40 });
+    try testing.expect(!po.in_think);
+    try testing.expect(!po.due());
+}
+
 test "degenerateTail: a short exact cycle convicts only past the minimum span" {
     const al = testing.allocator;
     // Live 2026-09-15 (pi, Qwen3.8 per-digit tokenizer): a 24-wide map wall
@@ -14019,6 +14181,39 @@ test "isNearRepeatTailLoop leaves legitimately repetitive output alone" {
         defer ids.deinit(al);
         for (0..near_repeat_window + 64) |i| try ids.append(al, @intCast(i));
         try testing.expect(!isNearRepeatTailLoop(ids.items));
+    }
+}
+
+test "degenerateTail acquits a low-entropy STRUCTURED file that ends inside the span bar" {
+    // Live 2026-09-15 under pi: a tool call rewriting five 24x19 tile maps of
+    // '0'/'1' on a per-digit tokenizer was cut as a near-repeat loop at window
+    // fill and the agent got an empty turn. Six distinct tokens and sixteen
+    // possible 4-grams satisfy every content ratio by construction, and the
+    // real 27B output (rows nearly all `100000000000000000000001`) is
+    // indistinguishable from a loop by content. What such a file does, and a
+    // loop never does, is END: the bar is the degenerate SPAN.
+    const al = testing.allocator;
+    const Shape = enum { bit_grid, lazy_map, hex_dump };
+    for ([_]Shape{ .bit_grid, .lazy_map, .hex_dump }) |shape| {
+        var ids = std.ArrayList(u32).empty;
+        defer ids.deinit(al);
+        var seed: u32 = 777;
+        var row: usize = 0;
+        while (ids.items.len < 2800) : (row += 1) {
+            try ids.append(al, 200); // '"'
+            for (0..24) |col| {
+                seed = seed *% 1664525 +% 1013904223;
+                const r = seed >> 16;
+                const tok: u32 = switch (shape) {
+                    .bit_grid => if (col == 0 or col == 23 or row % 19 == 0) 101 else @as(u32, if (r % 10 < 3) 101 else 100),
+                    .lazy_map => if (col == 0 or col == 23 or row % 19 == 0 or (row % 5 == 0 and col != 10)) 101 else 100,
+                    .hex_dump => 100 + r % 16,
+                };
+                try ids.append(al, tok);
+            }
+            try ids.appendSlice(al, &[_]u32{ 200, 201, 202 }); // '"', ',', '\n'
+        }
+        try testing.expect(degenerateTail(ids.items) == null);
     }
 }
 
@@ -14139,7 +14334,7 @@ test "degenerateTail: the trim start walks back PAST the near-repeat window" {
     var loop = std.ArrayList(u32).empty;
     defer loop.deinit(al);
     var rng: u32 = 12345;
-    while (loop.items.len < 3000) {
+    while (loop.items.len < near_repeat_min_span + 1000) {
         rng = rng *% 1664525 +% 1013904223;
         try loop.appendSlice(al, phrasings[(rng >> 16) % phrasings.len]);
     }
@@ -14170,7 +14365,7 @@ test "degenerateTail: the long-period tier keeps one copy of its sentence cycle"
     var cycle: [40]u32 = undefined;
     for (&cycle, 0..) |*v, i| v.* = @intCast(500 + i);
     var k: usize = 0;
-    while (k < degenerate_loop_long_reps + 2) : (k += 1) try ids.appendSlice(al, &cycle);
+    while (k < degenerate_loop_long_min_span / cycle.len + 1) : (k += 1) try ids.appendSlice(al, &cycle);
 
     const d = degenerateTail(ids.items) orelse return error.TestExpectedLoop;
     try testing.expectEqual(DegenerateTail.Tier.long_cycle, d.tier);

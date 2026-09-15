@@ -6787,7 +6787,42 @@ fn loopGuardTick(sch: *Scheduler, slot: *Slot, gen: *Generator) !bool {
         finishSlot(sch, slot, stop.finish_reason);
         return true;
     }
-    return false;
+    return thinkBoundTick(sch, slot, gen);
+}
+
+/// A thinking budget at its limit: commit the early-stop line and the closer
+/// through the model this tick, and decode the answer regular from here on
+/// (`spec_disable_reason = .think_bound`). True = the slot's tick is spent.
+fn thinkBoundTick(sch: *Scheduler, slot: *Slot, gen: *Generator) !bool {
+    const tb = gen.sampling.think_bound orelse return false;
+    tb.observe(gen.generated_ids.items);
+    if (!tb.due()) return false;
+    tb.fired = true;
+    if (!generate_mod.forcedBoundaryCanContinue(gen.completion_tokens, gen.max_tokens, tb.forced.len + 1)) {
+        log.warn("[think-bound] budget {d} reached with no room to close the thought (max_tokens {d})\n", .{ tb.budget, gen.max_tokens });
+        return false;
+    }
+    const r = try gen.commitForcedTokens(slot.allocator, tb.forced);
+    defer slot.allocator.free(r.emitted);
+    for (r.emitted) |t| {
+        slot.pushToken(t);
+        slot.completion_tokens += 1;
+        if (t != 0) slot.was_pad_only = false;
+    }
+    std.debug.assert(slot.completion_tokens == gen.completion_tokens);
+    if (r.stopped) {
+        finishSlot(sch, slot, gen.finish_reason);
+        return true;
+    }
+    gen.spec_disabled_runtime = true;
+    gen.spec_disable_reason = .think_bound;
+    log.info("[think-bound] reasoning budget {d} reached at {d} generated tokens; thought closed\n", .{ tb.budget, gen.generated_ids.items.len });
+    return true;
+}
+
+fn thinkBoundFired(gen: *const Generator) bool {
+    const tb = gen.sampling.think_bound orelse return false;
+    return tb.fired;
 }
 
 fn runSingleDecodeTick(sch: *Scheduler, slot: *Slot) !void {
@@ -6838,7 +6873,7 @@ fn runSingleDecodeTickInner(sch: *Scheduler, slot: *Slot) !void {
     // disabled branch is also where the mid-request RE-ENABLE check lives
     // (bypassing it pinned PLD off for the rest of the request even when the
     // generated tail turned echo-heavy).
-    const tick_mode: SpecTickMode = if (Planner.enabled() and slot.planner_force_plain) .regular else specTickMode(
+    const tick_mode: SpecTickMode = if ((Planner.enabled() and slot.planner_force_plain) or thinkBoundFired(gen)) .regular else specTickMode(
         slot.enable_mtp,
         gen.mtp != null,
         slot.enable_drafter,
@@ -9072,13 +9107,13 @@ test "loopStopReason: a LONG-period sentence loop is cut at the second tier" {
     defer ids.deinit(testing.allocator);
     for (0..30) |i| try ids.append(testing.allocator, @as(u32, @intCast(i * 3 + 11)));
 
-    // 58-token cycle, 9 reps: below the tier-2 threshold — NOT cut.
+    // 58-token cycle, one rep short of the tier's span bar: NOT cut.
     var cycle: [58]u32 = undefined;
     for (&cycle, 0..) |*v, i| v.* = @as(u32, @intCast(1000 + i));
-    for (0..9) |_| try ids.appendSlice(testing.allocator, &cycle);
+    for (0..generate_mod.degenerate_loop_long_min_span / cycle.len) |_| try ids.appendSlice(testing.allocator, &cycle);
     try testing.expect(loopStopReason(ids.items) == null);
 
-    // Tenth repetition crosses it — cut as an intentional stop.
+    // The next repetition crosses it — cut as an intentional stop.
     try ids.appendSlice(testing.allocator, &cycle);
     const reason = loopStopReason(ids.items) orelse return error.TestExpectedLoopCut;
     try testing.expectEqualStrings("stop", reason);
@@ -9147,7 +9182,7 @@ test "loopStopReason: a VARIED-phrasing restatement loop is cut at the near-repe
         &[_]u32{ 40, 41, 42, 43, 44, 45, 50, 46 },
     };
     var i: usize = 0;
-    while (ids.items.len < generate_mod.near_repeat_window + 32) : (i += 1) {
+    while (ids.items.len < generate_mod.near_repeat_min_span + 32) : (i += 1) {
         try ids.appendSlice(testing.allocator, phrasings[i % phrasings.len]);
     }
     const reason = loopStopReason(ids.items) orelse return error.TestExpectedLoopCut;

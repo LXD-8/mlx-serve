@@ -1323,6 +1323,7 @@ pub const DiskTier = struct {
             // Cap so tight nothing new landed — nothing to commit (a
             // checkpoint-only write still counts as progress).
             chunk_sizes.deinit(self.allocator);
+            ssm_res.deinit(self.allocator);
             return if (chunk_complete) .persisted else .partial;
         }
 
@@ -1331,11 +1332,7 @@ pub const DiskTier = struct {
         else
             kv_len;
         if (inherited_qsa) inherited_qsa_rows = @min(inherited_qsa_rows, prefix_rows);
-        const qsa_res = self.persistQsaHistory(dir_rel, ssm_checkpoints, inherited_qsa, inherited_qsa_rows, prefix_rows, s) catch |err| {
-            ssm_res.deinit(self.allocator);
-            chunk_sizes.deinit(self.allocator);
-            return err;
-        };
+        const qsa_res = try self.persistQsaHistory(dir_rel, ssm_checkpoints, inherited_qsa, inherited_qsa_rows, prefix_rows, s);
         const complete = chunk_complete and ssm_res.complete;
 
         // v4 spec snapshots — one sidecar file, REPLACED wholesale by every
@@ -5548,6 +5545,52 @@ test "DiskTier: a swallowed commit failure drops the latch it raised and keeps a
     try testing.expect(fired_foreign);
     var msg: [512]u8 = undefined;
     try testing.expectEqualStrings("foreign pre-existing error", mlx.takeError(&msg).?);
+}
+
+test "DiskTier: a raise anywhere in appendCommit frees its owned results exactly once" {
+    // Bar: the fault sweep reaches the QSA history write; a double free aborts under the testing allocator.
+    const io = std.testing.io;
+    const s = mlx.gpuStream();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var buf: [512]u8 = undefined;
+    const base = try tmpRoot(&tmp, io, &buf);
+
+    var tier = try DiskTier.init(testing.allocator, io, base, "fp-exits", 0, 128);
+    defer tier.deinit();
+    var cache = try KVCache.init(testing.allocator, 3);
+    defer cache.deinit();
+    try fillCache(&cache, s, 3, 600, 8, 0.0, .float32);
+    var tokens: [600]u32 = undefined;
+    for (&tokens, 0..) |*t, i| t.* = @intCast(i + 7);
+
+    const aux_shape = [_]c_int{ 1, 256, 8 };
+    const pooled_shape = [_]c_int{ 1, 64, 8 };
+    var src = buildHybridEntries(s, 200.0, 600.0);
+    defer freeHybridEntries(&src);
+    src[2].aux_state = makeArange(s, &aux_shape, 700.0);
+    src[2].qsa_pooled = makeArange(s, &pooled_shape, 800.0);
+    src[2].qsa_ratio = 4;
+    var cps = [_]transformer_mod.SSMCheckpoint{
+        try transformer_mod.captureSsmCheckpoint(testing.allocator, &src, 128, s),
+        try transformer_mod.captureSsmCheckpoint(testing.allocator, &src, 256, s),
+    };
+    defer for (&cps) |*cp| cp.deinit(testing.allocator);
+    try transformer_mod.attachQsaHistoryToLatest(&cps, &src, s);
+
+    var k: u64 = 1;
+    while (true) : (k += 1) {
+        mlx.fault.arm(k);
+        const r = tier.appendCommit(cache.entries, cache.step, cache.config, &tokens, false, &cps, s);
+        mlx.fault.disarm();
+        if (!mlx.fault.didFire()) {
+            _ = try r;
+            break;
+        }
+        try testing.expectError(error.MlxError, r);
+        tier.invalidateAll();
+    }
+    try testing.expect(k > 1);
 }
 
 test "DiskTier: MTP head QSA half round-trips a ring plus logical rows" {
