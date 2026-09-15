@@ -1146,6 +1146,9 @@ pub const ModelConfig = struct {
         // without reasoning ("17 - 9 = 8" where the thinking arm works the
         // word problem and answers "9 sheep are left").
         if (std.mem.eql(u8, self.model_type, "bailing_hybrid")) return true;
+        // k2_horizon: the template opens a think marker on every assistant
+        // turn; thinking-off is the prompt-committed closer (chat.contentChannelTail).
+        if (std.mem.eql(u8, self.model_type, "k2_horizon")) return true;
 
         return false;
     }
@@ -4207,6 +4210,13 @@ test "defaultEnableThinking: opt-in per arch, and every existing arch stays off"
     const ling = ModelConfig{ .model_type = "bailing_hybrid" };
     try testing.expect(ling.defaultEnableThinking(false));
     try testing.expect(ling.defaultEnableThinking(true));
+    // k2_horizon: the template opens a think marker on every assistant turn
+    // and the pack declares no default; a declared off still wins.
+    const k2 = ModelConfig{ .model_type = "k2_horizon" };
+    try testing.expect(k2.defaultEnableThinking(false));
+    try testing.expect(k2.defaultEnableThinking(true));
+    const k2_off = ModelConfig{ .model_type = "k2_horizon", .gen_enable_thinking = false };
+    try testing.expect(!k2_off.defaultEnableThinking(false));
     // gpt_oss opts in with AND without tools. Unlike muse there is no
     // thinking-off prompt to commit: harmony's `Reasoning: low|medium|high`
     // sets depth, not presence, so the model opens an analysis channel on

@@ -4639,6 +4639,15 @@ fn parseXmlElementArgsJson(allocator: std.mem.Allocator, body: []const u8) ?[]u8
 /// delimited by `<tool_sep` recovers with its CLOSED key/value pairs only;
 /// partial values are never salvaged.
 /// Earliest position at/after `from` where any of `needles` occurs, or null.
+fn isBareToolName(body: []const u8) bool {
+    const name = std.mem.trim(u8, body, " \t\n\r");
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.')) return false;
+    }
+    return true;
+}
+
 fn earliestIndexOfAny(text: []const u8, from: usize, needles: []const []const u8) ?usize {
     var best: ?usize = null;
     for (needles) |n| {
@@ -5322,7 +5331,9 @@ fn parseHy3ToolCalls(allocator: std.mem.Allocator, text: []const u8, calls: *std
             const body = after_base + 1;
             const this_close = std.mem.indexOfPos(u8, text, body, "</tool_call") orelse text.len;
             const ak_at = std.mem.indexOfPos(u8, text, body, "<arg_key") orelse text.len;
-            break :blk ak_at < this_close;
+            // A parameterless GLM call has no <arg_key>: its whole body is
+            // the bare NAME, a shape neither the JSON nor `<function=` arms read.
+            break :blk ak_at < this_close or isBareToolName(text[body..this_close]);
         }) {
             name_start = after_base + 1;
         } else {

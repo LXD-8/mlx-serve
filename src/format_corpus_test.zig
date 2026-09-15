@@ -1754,6 +1754,16 @@ const corpus = [_]Expect{
         .tool_arg_key = "path",
         .tool_arg_value = "a.txt",
     },
+    .{
+        // LIVE capture 2026-09-14 (K2-Horizon 7B, llmprobe agentic): a GLM
+        // call to a PARAMETERLESS tool has no <arg_key>, the one signal the
+        // GLM route keyed on, so it fell to the Hermes path and vanished.
+        .family = "k2",
+        .name = "GLM call with a bare name and no arguments",
+        .raw = "<tool_calls>\n<tool_call>list_files\n</tool_call>\n</tool_calls>",
+        .tool_name = "list_files",
+        .tool_count = 1,
+    },
 };
 
 /// Control tags that must never appear in visible content, regardless of

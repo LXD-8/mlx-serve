@@ -1156,6 +1156,22 @@ fn templateThinkOpener(template: []const u8) ?[]const u8 {
     return found;
 }
 
+/// The aliased atomic closer for the last non-whitespace prompt token, when
+/// that token is a K2 think opener (`Tokenizer.markerCloserFor`).
+fn promptOpenerMarkerCloser(allocator: std.mem.Allocator, lm: *LoadedModel, tok: *const Tokenizer, prompt_ids: []const u32) ?u32 {
+    if (tok.marker_closers == null) return null;
+    var i = prompt_ids.len;
+    while (i > 0 and prompt_ids.len - i < 8) {
+        i -= 1;
+        const id = prompt_ids[i];
+        if (tok.markerCloserFor(id)) |closer| return closer;
+        const text = decodeTokens(allocator, lm, tok, prompt_ids[i..][0..1], false) catch return null;
+        defer allocator.free(text);
+        if (std.mem.trim(u8, text, "\n\r\t ").len != 0) return null;
+    }
+    return null;
+}
+
 /// Resolve a reasoning protocol from the rendered prompt and template. Tokenizer
 /// indexes and exact recovery suffixes are cached on the loaded model.
 fn resolveReasoningProtocol(
@@ -1195,6 +1211,14 @@ fn resolveReasoningProtocol(
             .bare => {
                 proto.kind = .bare_think;
                 if (!proto.setCloser(chat_mod.BARE_THINK_CLOSER)) return false;
+                // K2 decodes its openers as `<think>` (alias); the prompt's
+                // opener token names the pack's own closer, and only that
+                // spelling is the boundary (a literal `</think>` in the
+                // reasoning is text).
+                if (promptOpenerMarkerCloser(allocator, lm, tok, prompt_ids)) |id| {
+                    const text = tok.id_to_token.get(id) orelse return false;
+                    if (!proto.setCloser(text)) return false;
+                }
             },
             .suffixed => |suffix| {
                 proto.kind = .suffixed_think;
