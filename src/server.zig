@@ -2375,7 +2375,9 @@ fn handleConnection(
             return;
         },
     };
-    defer scheduler.release(lm);
+    // A status read must not look like use — see `isStatusRoute`.
+    const status_read = isStatusRoute(method, path);
+    defer if (status_read) scheduler.releaseStatus(lm) else scheduler.release(lm);
 
     // A model loaded on demand freezes its own auto-context here, for the same
     // reason the `--model` primary does at startup: the number we advertise is
@@ -6162,6 +6164,17 @@ fn textGenTargetOf(lm: *LoadedModel) TextGenTarget {
         .has_text_lm = lm.state != .ready or lm.transformer != null or
             lm.ds4_engine != null or lm.llama_engine != null,
     };
+}
+
+/// True for a read-only route that reports on a model without using it.
+/// `GET /props` is the only one: every other status endpoint either answers
+/// before `ensureLoaded` (the Ollama block returns from `handleOllamaEarly`,
+/// and `/health`, `/metrics`, `/v1/models` return above it) or is a real load
+/// (`/v1/load-model`). `/props` alone falls through to the shared
+/// `ensureLoaded`/release pair, so without this a poll stamps `last_used_ms`
+/// and a client polling faster than `--idle-evict-secs` pins every model.
+fn isStatusRoute(method: []const u8, path: []const u8) bool {
+    return std.mem.eql(u8, method, "GET") and std.mem.eql(u8, path, "/props");
 }
 
 /// True for the routes textGenRejectReason protects — used for the
@@ -21092,6 +21105,25 @@ test "isTextGenRoute covers exactly the guarded surfaces" {
     try std.testing.expect(!isTextGenRoute("POST", "/v1/embeddings"));
     try std.testing.expect(!isTextGenRoute("POST", "/api/embed"));
     try std.testing.expect(!isTextGenRoute("GET", "/v1/models"));
+}
+
+test "isStatusRoute: only /props reaches the shared release" {
+    try std.testing.expect(isStatusRoute("GET", "/props"));
+    // Generation is use.
+    try std.testing.expect(!isStatusRoute("POST", "/v1/chat/completions"));
+    try std.testing.expect(!isStatusRoute("POST", "/v1/completions"));
+    // An explicit load is use — it is the whole point of the request.
+    try std.testing.expect(!isStatusRoute("POST", "/v1/load-model"));
+    // The Ollama status routes never reach the release: `handleOllamaEarly`
+    // answers and returns above `ensureLoaded`, so listing them here would be
+    // dead code that reads as coverage. Measured — polling each of these
+    // against a resident model with a 5s window evicts on schedule.
+    try std.testing.expect(!isStatusRoute("GET", "/api/ps"));
+    try std.testing.expect(!isStatusRoute("GET", "/api/tags"));
+    try std.testing.expect(!isStatusRoute("GET", "/api/version"));
+    try std.testing.expect(!isStatusRoute("POST", "/api/show"));
+    // Method matters: the path alone is not the predicate.
+    try std.testing.expect(!isStatusRoute("POST", "/props"));
 }
 
 test "embedEffectiveLimit: tighter of flag and model window; zeros mean unbounded" {
