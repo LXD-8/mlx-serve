@@ -82,6 +82,10 @@ struct WebViewWrapper: NSViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.browser.returnToHost()
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(browser: browser)
     }

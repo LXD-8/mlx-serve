@@ -11953,6 +11953,9 @@ pub fn tokenStops(next_token_id: u32, eos_token_ids: []const u32, consecutive_pa
 /// few dozen tokens instead of running all the way to `max_tokens`.
 pub const degenerate_loop_max_period: usize = 8;
 pub const degenerate_loop_reps: usize = 16;
+/// A short cycle must also cover this many tokens before it convicts: at
+/// period 1 or 2, 16 reps is a digit row or a zeroed array, not a loop.
+pub const degenerate_loop_min_span: usize = 128;
 // Tier 2 (2026-08-02 shooter wrap-up class): a two-sentence cycle of ~58
 // tokens repeated 26 times evaded the 8-token tier. Long periods demand
 // fewer reps — 10 verbatim repetitions of a 9..64-token cycle is
@@ -12122,11 +12125,11 @@ pub const DegenerateTail = struct {
 /// `reps` times at the tail, or null. `isDegenerateTailLoopRange` is this
 /// predicate — one implementation, so the detector and the trim can never
 /// disagree about what was convicted.
-fn exactCyclePeriod(tokens: []const u32, min_period: usize, max_period: usize, reps: usize) ?usize {
+fn exactCyclePeriod(tokens: []const u32, min_period: usize, max_period: usize, reps: usize, min_span: usize) ?usize {
     if (max_period == 0 or reps < 2) return null;
     var p: usize = @max(min_period, 1);
     while (p <= max_period) : (p += 1) {
-        const span = p * reps;
+        const span = @max(p * reps, min_span);
         if (tokens.len < span) continue;
         const tail = tokens[tokens.len - span ..];
         var periodic = true;
@@ -12157,7 +12160,7 @@ fn trailingCycleStart(tokens: []const u32, p: usize) usize {
 /// `scheduler.loopStopReason`: the exact tiers speak first, and the fuzzy
 /// near-repeat tier only ever judges spans they have already declined.
 pub fn degenerateTail(tokens: []const u32) ?DegenerateTail {
-    if (exactCyclePeriod(tokens, 1, degenerate_loop_max_period, degenerate_loop_reps)) |p| {
+    if (exactCyclePeriod(tokens, 1, degenerate_loop_max_period, degenerate_loop_reps, degenerate_loop_min_span)) |p| {
         return .{ .tier = .exact_cycle, .start = trailingCycleStart(tokens, p) + p };
     }
     if (exactCyclePeriod(
@@ -12165,6 +12168,7 @@ pub fn degenerateTail(tokens: []const u32) ?DegenerateTail {
         degenerate_loop_max_period + 1,
         degenerate_loop_long_max_period,
         degenerate_loop_long_reps,
+        0,
     )) |p| {
         return .{ .tier = .long_cycle, .start = trailingCycleStart(tokens, p) + p };
     }
@@ -12223,13 +12227,13 @@ pub const StallClock = struct {
 /// Pure and cheap: only the trailing `max_period * reps` ids are inspected, so
 /// cost is independent of total generated length.
 pub fn isDegenerateTailLoop(tokens: []const u32, max_period: usize, reps: usize) bool {
-    return isDegenerateTailLoopRange(tokens, 1, max_period, reps);
+    return exactCyclePeriod(tokens, 1, max_period, reps, degenerate_loop_min_span) != null;
 }
 
 /// Range variant so a long-period tier can scan 9..64 without also lowering
 /// the rep threshold for short cycles (a few "ha ha ha" reps stay legal).
 pub fn isDegenerateTailLoopRange(tokens: []const u32, min_period: usize, max_period: usize, reps: usize) bool {
-    return exactCyclePeriod(tokens, min_period, max_period, reps) != null;
+    return exactCyclePeriod(tokens, min_period, max_period, reps, 0) != null;
 }
 
 /// Compute a pooled (per the model's `pooling_mode` — mean by default),
@@ -13895,20 +13899,47 @@ test "isDegenerateTailLoop catches a repeated channel-opener cycle" {
         defer ids.deinit(testing.allocator);
         try ids.appendSlice(testing.allocator, &[_]u32{ 7, 8, 9 }); // some real prefix
         var k: usize = 0;
-        while (k < R + 4) : (k += 1) {
+        while (k < degenerate_loop_min_span / 3 + 1) : (k += 1) {
             try ids.appendSlice(testing.allocator, &[_]u32{ 101, 102, 103 }); // <|channel>,thought,\n
         }
         try testing.expect(isDegenerateTailLoop(ids.items, P, R));
     }
 
-    // A single token stuck on repeat (period 1) also counts once it passes R.
+    // A single token stuck on repeat (period 1) counts once it fills the span.
     {
         var ids = std.ArrayList(u32).empty;
         defer ids.deinit(testing.allocator);
         var k: usize = 0;
-        while (k < R + 2) : (k += 1) try ids.append(testing.allocator, 42);
+        while (k < degenerate_loop_min_span + 1) : (k += 1) try ids.append(testing.allocator, 42);
         try testing.expect(isDegenerateTailLoop(ids.items, P, R));
     }
+}
+
+test "degenerateTail: a short exact cycle convicts only past the minimum span" {
+    const al = testing.allocator;
+    // Live 2026-09-15 (pi, Qwen3.8 per-digit tokenizer): a 24-wide map wall
+    // row "111111111111111111111111" is 24 identical tokens and was cut as a
+    // period-1 loop mid-thought. Short cycles are common in honest code (digit
+    // rows, zeroed arrays), so the bar is a SPAN of identical cycling, not a
+    // rep count that period 1 reaches in a few dozen bytes.
+    var ids = std.ArrayList(u32).empty;
+    defer ids.deinit(al);
+    try ids.appendSlice(al, &[_]u32{ 7, 8, 9, 1 });
+    for (0..24) |_| try ids.append(al, 16);
+    try testing.expect(degenerateTail(ids.items) == null);
+
+    // A 32-element zeroed row: `0, 0, 0, ...` is a period-2 cycle of 64 tokens.
+    var zeros = std.ArrayList(u32).empty;
+    defer zeros.deinit(al);
+    try zeros.appendSlice(al, &[_]u32{ 7, 8, 9, 1 });
+    for (0..32) |_| try zeros.appendSlice(al, &[_]u32{ 15, 11 });
+    try testing.expect(degenerateTail(zeros.items) == null);
+
+    // Stuck for real: one token past the span is a loop and trims to one copy.
+    for (24..degenerate_loop_min_span) |_| try ids.append(al, 16);
+    const d = degenerateTail(ids.items) orelse return error.TestExpectedLoop;
+    try testing.expectEqual(DegenerateTail.Tier.exact_cycle, d.tier);
+    try testing.expectEqual(@as(usize, 5), d.start);
 }
 
 /// Build `n` tokens by cycling through `phrasings`, which share a vocabulary.
@@ -14069,14 +14100,14 @@ test "isNearRepeatTailLoop leaves PROCEDURAL code alone — it recycles a vocabu
 
 test "degenerateTail: the exact tier reports its tier and keeps ONE cycle" {
     const al = testing.allocator;
-    // 20 identical 3-token cycles after a real prefix. The cut is a
-    // truncation, so what is emitted should still SHOW what the model got
-    // stuck on — one copy of the cycle survives, the other 19 do not.
+    // Identical 3-token cycles past the span bar after a real prefix. The cut
+    // is a truncation, so what is emitted should still SHOW what the model got
+    // stuck on — one copy of the cycle survives, the rest do not.
     var ids = std.ArrayList(u32).empty;
     defer ids.deinit(al);
     try ids.appendSlice(al, &[_]u32{ 7, 8, 9, 10 });
     var k: usize = 0;
-    while (k < 20) : (k += 1) try ids.appendSlice(al, &[_]u32{ 101, 102, 103 });
+    while (k < degenerate_loop_min_span / 3 + 1) : (k += 1) try ids.appendSlice(al, &[_]u32{ 101, 102, 103 });
 
     const d = degenerateTail(ids.items) orelse return error.TestExpectedLoop;
     try testing.expectEqual(DegenerateTail.Tier.exact_cycle, d.tier);

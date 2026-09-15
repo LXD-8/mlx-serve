@@ -22,9 +22,14 @@
 - **FLUX.2 klein base takes a negative prompt.** The undistilled 9B "base" checkpoint needs classifier-free guidance; `guidance_scale` and `negative_prompt` now drive it. The distilled klein packs are unaffected. (#298)
 - **OpenCode 2 gets a live dashboard.** `mlx-serve launch opencode2` installs a monitor plugin that shows tokens per second, memory, model and a prompt-processing progress bar in the sidebar and footer. Needs `--metrics`, which the app turns on for you. (#387, #396, @beamivalice)
 - **Long pastes fold.** A pasted file or log folds at 15 lines with a show more control, and the transcript no longer renders blank after switching chats or jumping to the end. (#414, thanks @lojza3d)
+- **Sampled speculation can trade exactness for speed.** Flash Next can accept drafts with Typical or TokenV3 acceptance instead of the exact rule: pick it per model in Model Settings > MTP acceptance, or pass `--mtp-typical 0.2` / `--mtp-tokenv3 0.95`. Measured on an M5 Max at temperature 1: 7% to 27% faster decode from 1K to 1M context. Off by default; greedy requests are unchanged. (#427)
+- **Flash Next reads long prompts faster when memory allows.** Prompt processing takes 8192-token steps whenever the memory planner can afford them: +8% at 16K to 128K and +13% at 350K on an M5 Max, for about 3 GB more peak. (#423)
 
 ### Changes
 
+- A reply the server cuts for repeating itself now ends with `finish_reason: "stop"` and `finish_details: {"type": "repetition_loop"}` instead of looking like a token-limit cutoff, so agents no longer compact and retry into the same loop. (#327)
+- Stopping a turn while the model thinks or after a tool result leaves a footer with the time, Regenerate and delete, and the trash under an agent reply removes the whole turn instead of one message. (#426)
+- Voice recordings and audio attachments are saved beside the chat as 16 kHz WAV files instead of inside the chat history, so long voice chats save faster. (#430)
 - Restarting the server now reuses the whole of a long conversation from the SSD cache again. A text prompt that happened to contain the id the model uses for images made the disk cache treat the conversation as if it began there, so a 73k-token chat resumed from 16k and spent 34 seconds re-reading itself instead of 1.6.
 
 - New app icon. The tray footer is four tiles like the media row, and the power glyph is a red Quit.
@@ -39,6 +44,7 @@
 
 ### Fixes
 
+- The repetition guard no longer cuts a reply for a row of identical short tokens: a map row of `1`s, a zeroed array or a separator line used to end the turn as a loop, and with per-digit tokenizers like Qwen's this hit thinking mid-design. A short cycle now has to run for 128 tokens before it counts as a loop.
 - GGUF models on the embedded ds4 engine keep one session per model instead of one per request: four concurrent requests at 128k context no longer take 60 GB extra and get the server killed, and a repeated prompt reuses its cached prefix.
 - Embeddings requested from a GGUF model return a named 400 instead of crashing the server.
 - Flash Next agent sessions that share a long system prompt no longer get stuck re-reading the whole conversation every turn. A conversation that inherited another one's cache checkpoints was missing part of its sparse-attention history, and the broken entry stayed in the cache until the model was unloaded. (#390, thanks @d-b)
@@ -52,6 +58,7 @@
 - OpenCode 2 launches again: it was started with a `--model` flag its CLI does not have, and its background model service never saw our config.
 - The M5 sparse-attention kernels check themselves against the stock path at load and fall back if a driver update ever changes their answer.
 - The SSD conversation cache and the Neural Engine compile cache measure free disk the way Finder does. They used the `df` number, which leaves out space macOS frees on demand, so a Mac with 117 GB available was refused as having 36 GB and long conversations were never written to disk.
+- GGUF models on the embedded engines report `reasoning_tokens` in usage; a thinking reply used to count 0 on chat completions and Responses.
 - A model re-uploaded with fewer weight shards than its index lists loads again instead of being refused as an incomplete download (Gemma 3 12B from mlx-community). Since 26.8.11 the loader trusted the index over the files on disk.
 
 ## v26.9.2 — Per-model settings, chat providers, faster Flash Next

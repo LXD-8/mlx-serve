@@ -12,11 +12,30 @@ class BrowserManager: ObservableObject {
     /// Always available — created eagerly so tools work without the Browser window.
     let webView: WKWebView
 
+    /// Never shown: the frame `window.outerWidth/outerHeight` is read from
+    /// while no Browser pane holds the webView (0 reads as a headless bot).
+    let hostWindow: NSWindow
+    private let uiDelegate = WindowFrameUIDelegate()
+
     private init() {
         let config = WKWebViewConfiguration()
         config.preferences.isElementFullscreenEnabled = true
-        self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        let frame = NSRect(x: 0, y: 0, width: 1024, height: 768)
+        self.webView = WKWebView(frame: frame, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
+        hostWindow = NSWindow(contentRect: frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        hostWindow.isReleasedWhenClosed = false
+        hostWindow.isExcludedFromWindowsMenu = true
+        hostWindow.contentView = webView
+        webView.uiDelegate = uiDelegate
+    }
+
+    /// Re-parents the webView back into the hidden host once a pane lets go of it.
+    func returnToHost() {
+        guard webView.window !== hostWindow else { return }
+        webView.removeFromSuperview()
+        hostWindow.contentView = webView
     }
 
     func navigate(to urlString: String) async throws -> String {
@@ -205,6 +224,17 @@ class BrowserManager: ObservableObject {
 }
 
 // MARK: - Navigation Delegate
+
+/// WebKit answers the page's window-frame query with a ZERO rect unless the UI
+/// delegate implements this (private) selector; hosting alone never sets it.
+/// Compiled out for the store, whose binary must carry no private selector.
+private final class WindowFrameUIDelegate: NSObject, WKUIDelegate {
+    #if !MAS_BUILD
+    @objc func _webView(_ webView: WKWebView, getWindowFrameWithCompletionHandler handler: @escaping (CGRect) -> Void) {
+        handler(webView.window?.frame ?? .zero)
+    }
+    #endif
+}
 
 private class NavigationDelegate: NSObject, WKNavigationDelegate {
     let continuation: CheckedContinuation<String, Error>

@@ -7413,6 +7413,22 @@ fn truncateEmbeddingDims(embedding: []f32, dims: usize) []f32 {
     return out;
 }
 
+/// Text -> ids through the model's own vocabulary: an embedded engine's GGUF
+/// vocab, else the loaded BPE tokenizer (an engine model's `tok` is an empty stub).
+/// `add_special` reaches llama.cpp only.
+fn encodeText(allocator: std.mem.Allocator, lm: *const LoadedModel, tok: *const Tokenizer, text: []const u8, add_special: bool) ![]u32 {
+    const i32_ids = if (lm.ds4_engine) |engine|
+        try engine.tokenizeText(allocator, text)
+    else if (lm.llama_engine) |engine|
+        try engine.tokenizeText(allocator, text, add_special)
+    else
+        return tok.encode(allocator, text);
+    defer allocator.free(i32_ids);
+    const out = try allocator.alloc(u32, i32_ids.len);
+    for (i32_ids, out) |t, *o| o.* = @intCast(t);
+    return out;
+}
+
 fn handleTokenize(
     allocator: std.mem.Allocator,
     stream: *Conn,
@@ -7437,19 +7453,7 @@ fn handleTokenize(
         return;
     }
 
-    const ids = if (lm.ds4_engine) |engine| blk: {
-        const i32_ids = try engine.tokenizeText(allocator, content.?);
-        defer allocator.free(i32_ids);
-        const out = try allocator.alloc(u32, i32_ids.len);
-        for (i32_ids, 0..) |t, i| out[i] = @intCast(t);
-        break :blk out;
-    } else if (lm.llama_engine) |engine| blk: {
-        const i32_ids = try engine.tokenizeText(allocator, content.?, true);
-        defer allocator.free(i32_ids);
-        const out = try allocator.alloc(u32, i32_ids.len);
-        for (i32_ids, 0..) |t, i| out[i] = @intCast(t);
-        break :blk out;
-    } else try tok.encode(allocator, content.?);
+    const ids = try encodeText(allocator, lm, tok, content.?, true);
     defer allocator.free(ids);
 
     var result = std.ArrayList(u8).empty;
@@ -8695,19 +8699,7 @@ fn handleCompletions(
     // Tokenize prompt directly (no chat template). ds4-backed models
     // tokenize through the engine's GGUF vocab; MLX models go through
     // the loaded BPE tokenizer.
-    const prompt_ids = if (lm.ds4_engine) |engine| blk: {
-        const i32_ids = try engine.tokenizeText(allocator, prompt_text.?);
-        defer allocator.free(i32_ids);
-        const out = try allocator.alloc(u32, i32_ids.len);
-        for (i32_ids, 0..) |t, i| out[i] = @intCast(t);
-        break :blk out;
-    } else if (lm.llama_engine) |engine| blk: {
-        const i32_ids = try engine.tokenizeText(allocator, prompt_text.?, true);
-        defer allocator.free(i32_ids);
-        const out = try allocator.alloc(u32, i32_ids.len);
-        for (i32_ids, 0..) |t, i| out[i] = @intCast(t);
-        break :blk out;
-    } else try tok.encode(allocator, prompt_text.?);
+    const prompt_ids = try encodeText(allocator, lm, tok, prompt_text.?, true);
     defer allocator.free(prompt_ids);
     enable_mtp = admitMtpForCtx(enable_mtp, prompt_ids.len);
 
@@ -9618,7 +9610,7 @@ fn handleNonStreamingGeneration(
             reasoning_allocated = true;
             // usage.completion_tokens_details.reasoning_tokens (OpenAI/LM Studio
             // parity) so clients can budget visible content separately.
-            if (tok.encode(allocator, reasoning)) |rids| {
+            if (encodeText(allocator, lm, tok, reasoning, false)) |rids| {
                 defer allocator.free(rids);
                 usage_details_json = try std.fmt.allocPrint(allocator, ",\"completion_tokens_details\":{{\"reasoning_tokens\":{d}}}", .{rids.len});
                 usage_details_allocated = true;
@@ -17631,7 +17623,7 @@ fn handleResponsesInner(
     // split reasoning text — exact modulo merge boundaries).
     const reasoning_tok_count: u32 = blk: {
         const rt = reasoning_text orelse break :blk 0;
-        const rids = tok.encode(allocator, rt) catch break :blk 0;
+        const rids = encodeText(allocator, lm, tok, rt, false) catch break :blk 0;
         defer allocator.free(rids);
         break :blk @intCast(rids.len);
     };

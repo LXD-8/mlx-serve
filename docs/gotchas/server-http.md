@@ -2172,3 +2172,18 @@ media state, so text entries no longer carry a bogus boundary into checkpoint in
 and thinning. Live: 16,384/73,398 in 34.2 s becomes 73,293/73,375 in 1.6 s.
 
 Guard: `firstMediaPlaceholder: a placeholder id in ORDINARY TEXT is not a media boundary`.
+
+## Engine models counted reasoning with an empty tokenizer (2026-09-15)
+
+A thinking reply from a GGUF on the ds4 engine (Qwen3.8 Flash Next Q2) returned 375 chars of
+`reasoning_content` with `completion_tokens_details.reasoning_tokens: 0`; `/v1/responses`
+reported 0 too. Found by `tests/test_format_matrix.sh` on a new `flashnext-gguf` arm.
+
+Cause: an engine-backed model loads a stub CPU state whose `Tokenizer` has no vocabulary, and
+both usage sites re-encoded the split reasoning with `tok.encode`, which returns no ids. The
+prompt paths (`/tokenize`, `/v1/completions`) already branched on the engine, twice, by hand.
+
+Fix: `server.encodeText` owns the branch (ds4 vocab, llama.cpp vocab, else BPE) and all four
+sites call it. Live on ds4 / llama.cpp / MLX: 196 / 590 / 67 reasoning tokens.
+
+Guard: the format matrix's `usage reasoning_tokens > 0` check on a GGUF arm.

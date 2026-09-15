@@ -9051,8 +9051,8 @@ test "loopStopReason: a degenerate tail cut reports stop, a healthy tail is not 
     try testing.expect(loopStopReason(ids.items) == null);
 
     // Collapse into a short cycle (the php.html shape: "server-side scripting
-    // language, " ≈ a 6-token cycle) past the guard's rep threshold.
-    for (0..generate_mod.degenerate_loop_reps + 1) |_| {
+    // language, " ≈ a 6-token cycle) past the guard's span threshold.
+    for (0..generate_mod.degenerate_loop_min_span / 6 + 1) |_| {
         for ([_]u32{ 101, 202, 303, 404, 505, 606 }) |t| {
             try ids.append(testing.allocator, t);
         }
@@ -9088,7 +9088,7 @@ test "loopStopDecision: the wire reason is stop and the CAUSE rides beside it" {
     var ids = std.ArrayList(u32).empty;
     defer ids.deinit(testing.allocator);
     try ids.appendSlice(testing.allocator, &[_]u32{ 5, 6, 7 });
-    for (0..generate_mod.degenerate_loop_reps + 4) |_| {
+    for (0..generate_mod.degenerate_loop_min_span / 3 + 1) |_| {
         try ids.appendSlice(testing.allocator, &[_]u32{ 101, 102, 103 });
     }
 
@@ -9107,7 +9107,7 @@ test "loopStopDecision: the wire reason is stop and the CAUSE rides beside it" {
 
     // A new loop wholly inside the constrained answer retains the existing
     // stop/repetition result, with an absolute trim point for response code.
-    for (0..generate_mod.degenerate_loop_reps + 4) |_| {
+    for (0..generate_mod.degenerate_loop_min_span / 3 + 1) |_| {
         try ids.appendSlice(testing.allocator, &[_]u32{ 7, 8, 9 });
     }
     const answer_loop = loopStopDecision(ids.items[answer_start..]) orelse return error.TestExpectedLoopCut;
