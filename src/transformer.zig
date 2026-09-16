@@ -5871,30 +5871,35 @@ pub fn qsaVerifyGatherEnabled() bool {
 /// sets ONE floor for both.
 pub const QSA_VERIFY_GATHER_MIN_KV_DENSE: c_int = 32768;
 pub const QSA_VERIFY_GATHER_MIN_KV_QUANT: c_int = 16384;
-var qsa_verify_gather_min_kv_cached: ?c_int = null;
+var qsa_verify_gather_min_kv_env: ?c_int = null;
+var qsa_verify_gather_min_kv_env_read = false;
 pub var qsa_verify_gather_min_kv_override: ?c_int = null;
 
+/// `quantized` = the arm will dequantize only the gathered rows, i.e. the
+/// view carries affine triples (`DenseKVView.has_quant_triple`); TurboQuant
+/// hands the arm a dense view and takes the dense floor.
 pub fn qsaVerifyGatherMinKvFor(quantized: bool) c_int {
     if (qsa_verify_gather_min_kv_override) |v| return v;
-    if (qsa_verify_gather_min_kv_cached) |v| return v;
-    if (std.c.getenv("MLX_SERVE_QSA_VERIFY_GATHER_MIN_KV")) |raw| {
-        if (std.fmt.parseInt(c_int, std.mem.sliceTo(raw, 0), 10)) |v| {
-            qsa_verify_gather_min_kv_cached = v;
-            return v;
-        } else |_| {}
+    if (!qsa_verify_gather_min_kv_env_read) {
+        qsa_verify_gather_min_kv_env_read = true;
+        if (std.c.getenv("MLX_SERVE_QSA_VERIFY_GATHER_MIN_KV")) |raw| {
+            qsa_verify_gather_min_kv_env = std.fmt.parseInt(c_int, std.mem.sliceTo(raw, 0), 10) catch null;
+        }
     }
+    if (qsa_verify_gather_min_kv_env) |v| return v;
     return if (quantized) QSA_VERIFY_GATHER_MIN_KV_QUANT else QSA_VERIFY_GATHER_MIN_KV_DENSE;
 }
 
 test "qsa verify gather floor: dense KV 32768, quantized 16384, override wins" {
     const prev_o = qsa_verify_gather_min_kv_override;
-    const prev_c = qsa_verify_gather_min_kv_cached;
+    const prev_e = qsa_verify_gather_min_kv_env;
     defer {
         qsa_verify_gather_min_kv_override = prev_o;
-        qsa_verify_gather_min_kv_cached = prev_c;
+        qsa_verify_gather_min_kv_env = prev_e;
     }
     qsa_verify_gather_min_kv_override = null;
-    qsa_verify_gather_min_kv_cached = null;
+    qsa_verify_gather_min_kv_env = null;
+    qsa_verify_gather_min_kv_env_read = true;
     try std.testing.expectEqual(@as(c_int, 32768), qsaVerifyGatherMinKvFor(false));
     try std.testing.expectEqual(@as(c_int, 16384), qsaVerifyGatherMinKvFor(true));
     qsa_verify_gather_min_kv_override = 4096;
@@ -6178,7 +6183,7 @@ pub fn qsaVerifyGatherAttn(
     if (ks[3] != head_dim) return dq.no(.geometry);
     const vs = mlx.getShape(kv_view.v);
     if (vs.len != 4 or vs[0] != 1 or vs[1] != h_kv or vs[2] != kv or vs[3] != head_dim) return dq.no(.geometry);
-    if (kv <= qsaVerifyGatherMinKvFor(kv_view.k_triple_q.ctx != null)) return dq.no(.kv_floor);
+    if (kv <= qsaVerifyGatherMinKvFor(kv_view.has_quant_triple)) return dq.no(.kv_floor);
 
     const geom = QsaVerifyGeom.compute(seq_len, kv, ratio, kb) orelse return dq.no(.width);
     if (geom.k_blocks <= 0 or geom.rows <= 0 or geom.rows >= kv) return dq.no(.no_win);
@@ -21247,7 +21252,7 @@ pub const Transformer = struct {
         // higher than the prefill/decode one — the union is fixed-size.
         const want_blocks = batch == 1 and kv > qsaGatherMinKv() and qsaGatherEnabled() and
             (seq_len >= FUSED256_MIN_Q_LEN or (seq_len == 1 and qsaDecodeGatherEnabled()) or
-                (seq_len >= 2 and seq_len < FUSED256_MIN_Q_LEN and qsaVerifyGatherEnabled() and kv > qsaVerifyGatherMinKvFor(ctx.cache.config.scheme != .off)));
+                (seq_len >= 2 and seq_len < FUSED256_MIN_Q_LEN and qsaVerifyGatherEnabled() and kv > qsaVerifyGatherMinKvFor(ctx.cache.config.scheme == .affine)));
         if (want_blocks) {
             // Prefill: sorted per-row block indices for the gather kernel;
             // the dense [S, kv] mask is never built. Decode (S==1): the same
