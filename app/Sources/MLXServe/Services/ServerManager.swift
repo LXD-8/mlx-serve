@@ -31,7 +31,7 @@ class ServerManager: ObservableObject {
     }
     /// The local entry that can ANSWER a chat request.
     private var residentChatModel: ModelInfo? {
-        if let m = modelInfo, m.servesChat { return m }
+        if let m = modelInfo, m.servesChat, m.loaded { return m }
         return allModels.first { $0.servesChat && $0.loaded && $0.lanPeer == nil }
     }
     /// Discovered LAN models advertising `capability` ("chat", "image",
@@ -130,20 +130,16 @@ class ServerManager: ObservableObject {
         launch(args: args, options: options)
     }
 
-    /// Has a headless server already had the selected chat model hot-loaded
-    /// by `ensureDefaultChatModel`? Reset on every launch; only consulted for
-    /// headless launches (`currentModelPath` empty).
-    private var chatDefaultEnsured = false
-
     /// Should a chat surface hot-load the selected model before its turn?
     /// True exactly when: the server is running, it was launched HEADLESS
     /// (media-first — no `--model`, so the registry has NO default and the
-    /// "mlx-serve" alias 503s with no_model), we haven't already ensured it,
+    /// "mlx-serve" alias 503s with no_model), no chat model is resident (an unload
+    /// or idle eviction drops the default, so a once-per-process latch 503'd),
     /// and the app actually has a selected model to offer. Pure + static so
     /// the gen-first→chat-later hole (live 2026-07-05) stays unit-pinned.
     nonisolated static func shouldEnsureChatDefault(running: Bool, launchedModelPath: String,
-                                                    alreadyEnsured: Bool, selectedModelPath: String) -> Bool {
-        running && launchedModelPath.isEmpty && !alreadyEnsured && !selectedModelPath.isEmpty
+                                                    chatResident: Bool, selectedModelPath: String) -> Bool {
+        running && launchedModelPath.isEmpty && !chatResident && !selectedModelPath.isEmpty
     }
 
     /// Called by chat surfaces (chat window / quick launcher via
@@ -156,10 +152,9 @@ class ServerManager: ObservableObject {
     func ensureDefaultChatModel(selectedModelPath: String) async {
         guard Self.shouldEnsureChatDefault(running: status == .running,
                                            launchedModelPath: currentModelPath,
-                                           alreadyEnsured: chatDefaultEnsured,
+                                           chatResident: residentChatModel != nil,
                                            selectedModelPath: selectedModelPath) else { return }
         if (try? await loadModel(id: selectedModelPath)) != nil {
-            chatDefaultEnsured = true
             // Recorded here, not in `loadModel`: this hot-load passes no `setDefault`.
             StartupModelChoice.recordLoaded(path: selectedModelPath)
         }
@@ -190,7 +185,6 @@ class ServerManager: ObservableObject {
         api.host = options.host
         status = .starting
         lastError = ""
-        chatDefaultEnsured = false
         clearServerLog()
 
         // Reap orphaned mlx-serve processes still bound to our port (e.g. left
@@ -635,7 +629,8 @@ class ServerManager: ObservableObject {
     func refreshModels() async {
         if let all = try? await api.fetchAllModels(port: port) {
             allModels = all
-            if let first = all.first { modelInfo = first }
+            // Headless servers sort no default first, so the head row can be an unloaded stub.
+            modelInfo = all.first { $0.loaded && $0.lanPeer == nil }
         }
     }
 

@@ -5,6 +5,7 @@ const kv_quant_mod = @import("kv_quant.zig");
 const tokenizer_mod = @import("tokenizer.zig");
 const generate_mod = @import("generate.zig");
 const mtp_mod = @import("mtp.zig");
+const mtp_acceptance_mod = @import("mtp_acceptance.zig");
 const drafter_mod = @import("drafter.zig");
 const chat_mod = @import("chat.zig");
 const rp_mod = @import("reasoning_protocol.zig");
@@ -827,6 +828,20 @@ fn payloadTooLargeMessage(buf: []u8, got: usize, cap: usize) []const u8 {
 ///
 /// Every consumer of the requested id must go through here, so the LAN gate and
 /// dispatch can't disagree about which model a request names.
+/// `?model=<id>` for bodiless GETs (`/props`), percent-decoded into `buf`.
+fn queryModel(buf: []u8, raw_path: []const u8) ?[]const u8 {
+    const q = raw_path[(std.mem.indexOfScalar(u8, raw_path, '?') orelse return null) + 1 ..];
+    var it = std.mem.splitScalar(u8, q, '&');
+    while (it.next()) |kv| {
+        if (!std.mem.startsWith(u8, kv, "model=") or kv.len == "model=".len) continue;
+        const v = kv["model=".len..];
+        if (v.len > buf.len) return null;
+        @memcpy(buf[0..v.len], v);
+        return std.Uri.percentDecodeInPlace(buf[0..v.len]);
+    }
+    return null;
+}
+
 pub fn parseModelFromRequest(body: []const u8, content_type: []const u8) ?[]const u8 {
     if (multipart.boundaryFromContentType(content_type)) |boundary| {
         var it = multipart.Iterator.init(body, boundary) catch return null;
@@ -2271,9 +2286,10 @@ fn handleConnection(
     // chat (live from the iPhone app, 2026-07-25). Canonicalise once, here,
     // so every consumer below (proxy, peek, ensureLoaded) sees the real id.
     var model_id_buf: [512]u8 = undefined;
+    var query_model_buf: [512]u8 = undefined;
     var requested_model_id = lan_mod.unescapeJsonSlashes(
         &model_id_buf,
-        parseModelFromRequest(request_body, request_content_type) orelse "",
+        parseModelFromRequest(request_body, request_content_type) orelse queryModel(&query_model_buf, raw_path) orelse "",
     );
     // ── LAN-discovered remote model (`<id>@<peer>`) → proxy the request to
     //    its host byte-for-byte, model field rewritten to the bare id.
@@ -7012,6 +7028,73 @@ fn ngramWarmPropsJson(allocator: std.mem.Allocator, bytes: u64, total: u64) ![]u
     return std.fmt.allocPrint(allocator, ",\"ngram_warm\":{{\"bytes\":{d},\"total\":{d}}}", .{ bytes, total });
 }
 
+/// Effective per-model serving settings, resolved the way a request that sends no overrides sees them.
+const PropsSettings = struct {
+    engine: []const u8,
+    kv_quant: []const u8,
+    kv_attn_mode: KvAttnMode,
+    decode_attn_quant: bool,
+    prefill_chunk: usize,
+    mtp_loaded: bool,
+    mtp_default_on: bool,
+    mtp_acceptance: mtp_acceptance_mod.Mode,
+    /// 0 = auto.
+    mtp_depth: u32,
+    mtp_adaptive: bool,
+    /// 0 = no ceiling.
+    max_mtp_ctx: u32,
+    drafter: []const u8,
+    pld: PldDefaults,
+    max_concurrent: u32,
+    prefix_cache_mem_bytes: u64,
+    prefix_cache_disk_bytes: u64,
+};
+
+fn propsSettingsFor(lm: *LoadedModel) PropsSettings {
+    const config = lm.config.?;
+    const kv = configuredKvQuantFor(config);
+    return .{
+        .engine = if (lm.ds4_engine != null) "ds4" else if (lm.llama_engine != null) "llama" else "mlx",
+        .kv_quant = if (lm.llama_engine != null) @tagName(llama_kv_quant) else if (kv.isQuant()) (if (kv.bits == 4) "4" else "8") else "off",
+        .kv_attn_mode = server_config.kv_attn_mode,
+        .decode_attn_quant = transformer_mod.decodeAttnQuantEnabled(),
+        .prefill_chunk = generate_mod.prefill_chunk_override,
+        .mtp_loaded = mtpCapable(lm),
+        .mtp_default_on = defaultEnableMtp(lm.mtp != null, config.isMoe(), forceMtpFor(config), dsv4DraftStages(lm), nativeMeasuredMoeHead(lm)),
+        .mtp_acceptance = config.mtp_acceptance_override orelse generate_mod.mtp_acceptance_default,
+        .mtp_depth = lm.mtp_depth,
+        .mtp_adaptive = generate_mod.Generator.mtpAdaptiveEnabled(),
+        .max_mtp_ctx = generate_mod.max_mtp_ctx,
+        .drafter = if (lm.dflash != null) "dflash" else if (lm.drafter != null) "assistant" else "none",
+        .pld = .{ .enable = server_config.default_enable_pld, .draft_len = server_config.default_pld_draft_len, .key_len = server_config.default_pld_key_len },
+        .max_concurrent = max_concurrent,
+        .prefix_cache_mem_bytes = prefix_cache_mem_bytes,
+        .prefix_cache_disk_bytes = prefix_cache_disk_bytes,
+    };
+}
+
+/// The /props "settings" object: leading-comma fragment spliced before the props root close.
+fn settingsPropsJson(allocator: std.mem.Allocator, st: PropsSettings) ![]u8 {
+    var param_buf: [32]u8 = undefined;
+    const param: []const u8 = switch (st.mtp_acceptance) {
+        .exact => "null",
+        .typical => |t| try std.fmt.bufPrint(&param_buf, "{d}", .{t.delta}),
+        .tokenv3 => |a| try std.fmt.bufPrint(&param_buf, "{d}", .{a}),
+    };
+    return std.fmt.allocPrint(allocator, ",\"settings\":{{\"version\":\"{s}\",\"engine\":\"{s}\",\"kv_quant\":\"{s}\",\"kv_attn_mode\":\"{s}\",\"decode_attn_quant\":{},\"prefill_chunk\":{d},\"mtp\":{{\"loaded\":{},\"default_on\":{},\"acceptance\":\"{s}\",\"acceptance_param\":{s},\"depth\":{d},\"adaptive\":{},\"max_ctx\":{d}}},\"drafter\":\"{s}\",\"pld\":{{\"default_on\":{},\"draft_len\":{d},\"key_len\":{d}}},\"max_concurrent\":{d},\"prefix_cache\":{{\"mem_bytes\":{d},\"disk_bytes\":{d}}}}}", .{
+        build_options.version,                      st.engine,
+        st.kv_quant,                                @tagName(st.kv_attn_mode),
+        st.decode_attn_quant,                       st.prefill_chunk,
+        st.mtp_loaded,                              st.mtp_default_on,
+        mtp_acceptance_mod.name(st.mtp_acceptance), param,
+        st.mtp_depth,                               st.mtp_adaptive,
+        st.max_mtp_ctx,                             st.drafter,
+        st.pld.enable,                              st.pld.draft_len,
+        st.pld.key_len,                             st.max_concurrent,
+        st.prefix_cache_mem_bytes,                  st.prefix_cache_disk_bytes,
+    });
+}
+
 /// The /props "ane" object (A8): mode, coverage, geometry and the int8
 /// bill of the resident ANE prefill engine, so "what is the Neural Engine
 /// holding" is answerable without log-grepping. Pure — the handler feeds
@@ -7111,7 +7194,9 @@ fn handleProps(allocator: std.mem.Allocator, stream: *Conn, lm: *LoadedModel) !v
     defer allocator.free(ngram_json);
     const batching_json = try batchingPropsJson(allocator, batchVerdictFor(lm));
     defer allocator.free(batching_json);
-    const extra_json = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ ane_json, ngram_json, batching_json });
+    const settings_json = try settingsPropsJson(allocator, propsSettingsFor(lm));
+    defer allocator.free(settings_json);
+    const extra_json = try std.fmt.allocPrint(allocator, "{s}{s}{s}{s}", .{ ane_json, ngram_json, batching_json, settings_json });
     defer allocator.free(extra_json);
 
     const body = try renderPropsBody(allocator, config, ctx_str, active_mem, peak_mem, available_mem, safe_ctx, cache_mem, extra_json);
@@ -20400,6 +20485,58 @@ test "anePropsJson: the /props ane object carries mode, coverage, the int8 bill 
     try testing.expectEqual(@as(i64, 1), rows_json.items[0].object.get("instance").?.integer);
     try testing.expectEqual(@as(i64, 2), rows_json.items[1].object.get("instance").?.integer);
     try testing.expectEqual(@as(i64, 112), rows_json.items[1].object.get("evals").?.integer);
+}
+
+test "queryModel: GET /props?model=<id> routes to that model, percent-decoded" {
+    var buf: [512]u8 = undefined;
+    try testing.expectEqualStrings("mlx-community/Qwen3.5-0.8B", queryModel(&buf, "/props?x=1&model=mlx-community%2FQwen3.5-0.8B").?);
+    try testing.expect(queryModel(&buf, "/props") == null);
+    try testing.expect(queryModel(&buf, "/props?models=a") == null);
+}
+
+test "settingsPropsJson: /props names the effective serving settings a benchmark ran under" {
+    const frag = try settingsPropsJson(testing.allocator, .{
+        .engine = "mlx",
+        .kv_quant = "8",
+        .kv_attn_mode = .auto,
+        .decode_attn_quant = true,
+        .prefill_chunk = 8192,
+        .mtp_loaded = true,
+        .mtp_default_on = true,
+        .mtp_acceptance = .{ .tokenv3 = 0.95 },
+        .mtp_depth = 0,
+        .mtp_adaptive = true,
+        .max_mtp_ctx = 32768,
+        .drafter = "none",
+        .pld = .{ .enable = false, .draft_len = 5, .key_len = 3 },
+        .max_concurrent = 4,
+        .prefix_cache_mem_bytes = 2048,
+        .prefix_cache_disk_bytes = 0,
+    });
+    defer testing.allocator.free(frag);
+    var config = model_mod.ModelConfig{};
+    config.model_type = "qwen3_5";
+    const body = try renderPropsBody(testing.allocator, &config, "4096", 1, 2, 3, 4, 5, frag);
+    defer testing.allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    const st = (parsed.value.object.get("settings") orelse return error.MissingSettings).object;
+    try testing.expectEqualStrings(build_options.version, st.get("version").?.string);
+    try testing.expectEqualStrings("8", st.get("kv_quant").?.string);
+    try testing.expectEqualStrings("auto", st.get("kv_attn_mode").?.string);
+    try testing.expect(st.get("decode_attn_quant").?.bool);
+    const mtp = st.get("mtp").?.object;
+    try testing.expect(mtp.get("default_on").?.bool);
+    try testing.expectEqualStrings("tokenv3", mtp.get("acceptance").?.string);
+    try testing.expectApproxEqAbs(@as(f64, 0.95), mtp.get("acceptance_param").?.float, 1e-6);
+    try testing.expectEqual(@as(i64, 32768), mtp.get("max_ctx").?.integer);
+    try testing.expectEqual(@as(i64, 4), st.get("max_concurrent").?.integer);
+
+    const exact = try settingsPropsJson(testing.allocator, .{ .engine = "llama", .kv_quant = "q4", .kv_attn_mode = .dense, .decode_attn_quant = false, .prefill_chunk = 4096, .mtp_loaded = false, .mtp_default_on = false, .mtp_acceptance = .exact, .mtp_depth = 3, .mtp_adaptive = false, .max_mtp_ctx = 0, .drafter = "dflash", .pld = PldDefaults.off, .max_concurrent = 1, .prefix_cache_mem_bytes = 0, .prefix_cache_disk_bytes = 0 });
+    defer testing.allocator.free(exact);
+    var ep = try std.json.parseFromSlice(std.json.Value, testing.allocator, exact[",\"settings\":".len..], .{});
+    defer ep.deinit();
+    try testing.expect(ep.value.object.get("mtp").?.object.get("acceptance_param").? == .null);
 }
 
 test "ngramWarmPropsJson: /props names how far the qwen4 ngram warm has got" {
