@@ -113,8 +113,8 @@ AR (`next`) forwards `[1,1,d]` qmv; verify forwards `[1,K+1,d]` qmm. INT4 float 
 
 The same float-reduction issue compounds when **KV is also INT4** — see "KV cache quantization" below.
 
-### KV cache quantization (`--kv-quant {off, 4, 8, turbo2, turbo4}`)
-Group-wise affine quantization of K/V via `mlx_quantize`/`mlx_dequantize` (no new kernels). Storage swaps dense `[B,H,T,D]` bf16 buffers for a triple `(q, scales, biases)` where `q` is packed uint32 and `scales`/`biases` are per-group bf16; SDPA always reads dense data via `KVCache.denseView`, which dequantizes on the fly in quant mode. `--kv-quant` sets the **process default**; individual requests can override via the `kv_quant` body field on `/v1/chat/completions`, `/v1/messages`, `/v1/responses` (`"off"`, `4`, `8`, `"turbo2"`, `"turbo4"`). Memory: ~4× smaller at 4-bit (4.5 bits/elem including scale+bias overhead at group=64), ~2× at 8-bit. TurboQuant adds a Hadamard rotation before affine quant; `turbo2` halves bits-per-element again at the cost of an extra `[head_dim,head_dim]` matmul per K/V per token. Implemented in `src/kv_quant.zig` + `src/transformer.zig` (KVCache).
+### KV cache quantization (`--kv-quant {off, 4, 8}`)
+Group-wise affine quantization of K/V via `mlx_quantize`/`mlx_dequantize` (no new kernels). Storage swaps dense `[B,H,T,D]` bf16 buffers for a triple `(q, scales, biases)` where `q` is packed uint32 and `scales`/`biases` are per-group bf16; SDPA always reads dense data via `KVCache.denseView`, which dequantizes on the fly in quant mode. `--kv-quant` sets the **process default**; individual requests can override via the `kv_quant` body field on `/v1/chat/completions`, `/v1/messages`, `/v1/responses` (`"off"`, `4`, `8`). Memory: ~4× smaller at 4-bit (4.5 bits/elem including scale+bias overhead at group=64), ~2× at 8-bit. Implemented in `src/kv_quant.zig` + `src/transformer.zig` (KVCache).
 
 - **Equivalence thresholds** (`tests/test_kv_quant_equivalence.sh`, default 30/30; raise via env vars for stricter testing):
   - Gemma 4 E4B 4-bit weights: 30/30 passes; 8-bit KV stays identical past 60 in practice.
@@ -124,14 +124,12 @@ Group-wise affine quantization of K/V via `mlx_quantize`/`mlx_dequantize` (no ne
 - **Compounding with INT4 weights**: Both the existing weight-quant divergence (PLD/drafter note above) and KV-quant divergence stack. For byte-stable long-greedy at temp=0 on INT4-weight models: prefer `--kv-quant 8` if you need a quant; `--kv-quant off` if you don't.
 - **Drafter**: target's KV may be quantized; drafter cross-attends through `cache.denseView` so it never sees the quantized representation directly. Drafter's own cache stays dense. No special handling needed.
 - **Snapshot / prefix cache**: snapshot/restore copy 6 array handles per entry instead of 2 (4 extra for scale/bias); hot prefix cache works unchanged because it operates on `KVCacheSnapshot` opaquely. Each `HotEntry` records its scheme; `findBestMatch` filters by `(prompt_ids, has_tools, scheme)` so per-request overrides never produce a cross-scheme hit.
-- **TurboQuant (`turbo2`, `turbo4`)**: same affine-write/read path with a per-layer Hadamard rotation applied before quantization and undone after dequantization. `TurboState` builds `2 × num_layers` symmetric `[head_dim, head_dim]` bf16 matrices via Sylvester construction with per-layer column-sign flips (deterministic, no RNG seed). `head_dim` MUST be a power of two — caller passes via `KVCache.initWithConfigAndHeadDim`. State lives on `KVCache.quant_state` and refcount-shares through `snapshot`/`restore`. The rotation matters when inputs have outliers that would inflate per-group ranges in straight affine; on smooth data it can be slightly *worse* than straight affine because the rotation spreads tight local ranges into a wider global range.
-- **1-bit TurboQuant**: not yet shipped. `mlx_quantize`/`mlx_dequantize` only support bits ∈ {2,4,8} natively, so 1-bit requires a custom pack/unpack. Land alongside the future fused-kernel work.
+- **TurboQuant (`turbo2`, `turbo4`) was removed (2026-09-15)**: a per-layer Hadamard rotation before `mlx_quantize`, undone after. No fused path ever read it (every quantized kernel keys on the affine triple), so it dequantized and un-rotated the whole cache every token: 14% slower than affine at 4k and a third slower at 16k on Flash Next / M4 Max, plus its own traps (pow2 key width, MLA refusal, lazy rotation state, unpersistable to SSD).
 - **Extending the scheme** (e.g. fused quant-SDPA Metal kernel): the contract between cache and attention is `KVCache.denseView`. To add a new scheme:
   1. Add an enum variant to `kv_quant.Scheme`.
-  2. (Optional) Add per-cache state (e.g. `quant_state: ?TurboState` for rotation matrices).
-  3. Add `quantizeX` / `dequantizeX` functions in `src/kv_quant.zig`.
-  4. Extend the `switch (config.scheme)` arms in `KVCache.update` and `KVCache.denseView`.
-  SDPA call sites don't change. See top-of-file comment in `src/kv_quant.zig` for the worked TurboQuant example (now shipped).
+  2. Add `quantizeX` / `dequantizeX` functions in `src/kv_quant.zig`.
+  3. Extend the `switch (config.scheme)` arms in `KVCache.update` and `KVCache.denseView`.
+  SDPA call sites don't change. A scheme the fused kernels cannot read pays a whole-cache dequant per token — that is what killed TurboQuant.
 
 ### Hot prefix cache memory budget (`--prefix-cache-mem`)
 Wave 1.B — the hot prefix cache used to cap on entry count alone; with 4 KB-ctx entries on Gemma 4 E4B that's an 8 GB worst case. `--prefix-cache-mem N{KB,MB,GB}` (default 2 GB) caps resident KV bytes; `commit` evicts LRU entries until `current_kv_bytes + new_bytes <= budget`. `0`/`off` disables the byte cap (count cap still applies). Each `HotEntry` records its bytes at commit time (sum of `mlx_array_size × mlx_array_itemsize` across keys/values plus the scales/biases triples in quant mode). Log line: `[hot-cache] resident=X.XX / Y.YY MB (E entries)` on every commit / eviction.
@@ -2310,13 +2308,13 @@ Three holes the `bailing_hybrid` port left open, all of the same shape — a gen
 
 **`updateDense` learned that K and V can differ; `updateAffine` did not.** The dense write path was generalized to read each buffer's own head dim, and the MLA comment noted that "the quantized-KV fused kernels assume one head width for both, so MLA never opts in". That is true of the fused READ kernels and says nothing about the cache SCHEME: `--kv-quant 4|8` builds an `.affine` cache for whatever arch is loaded, and `updateAffine` solved `q_last`/`sc_last` once from `new_k`'s head dim and handed them to all six `growQuantBuf` calls. At K 192 / V 128 the value buffer came out 24 u32 wide while `new_vq.q` was 16, so `writeAtOffset` slice-updated a narrow chunk into a wide window — an mlx-level shape error, i.e. one we cannot catch. `truncate`'s affine arm had the same bug in view form (value scale/bias views sliced against the KEY scales' shape). The rule: a "K and V may differ" generalization is not done until every buffer in every scheme is sized from the operand it stores. Both are now covered by `KVCache affine quant carries an asymmetric K/V too`.
 
-**A lazily-built rotation refuses lazily.** TurboQuant needs a power-of-two width and MLA's key is 192, so it genuinely cannot serve this arch. But `TurboState` builds its Hadamard matrices at the first write, so the refusal (`error.NonPowerOfTwoHeadDim`) fired inside the first request that reached an MLA layer — a 500 mid-generation for something knowable at load. `initWithConfigAndHeadDim` had even taken a `head_dim` parameter and thrown it away (`_ = head_dim; // observed at first write`), while its own doc comment claimed "the scheduler's load path validates head_dim is pow2 at cache init". The parameter is now used — against `ModelConfig.kvCacheKeyHeadDim()`, because `head_dim` says 128 for an arch that caches 192-wide keys, so the declared field would have validated the wrong number. When a lazy constructor's constraint is knowable from config, check it eagerly and let the request path keep the lazy build.
+**A lazily-built rotation refuses lazily.** TurboQuant (since removed, see the KV cache quantization section) built its Hadamard matrices at the first write, so its power-of-two refusal fired inside the first request that reached an MLA layer instead of at load. When a lazy constructor's constraint is knowable from config, check it eagerly and let the request path keep the lazy build.
 
 **Two arms means the arm is selected, not defaulted.** `kda_gate_lower_bound` was declared "0 = plain -exp(A_log)·softplus form" and the forward then handed that 0 straight to the bounded chain, which computes `exp(0 · σ(…))` = 1: a forget gate that never forgets, on a checkpoint whose only difference was omitting the key. The parse refuses a non-negative bound that is PRESENT, but an absent one left the field at its default and the field's own comment unhonored. The fix is a predicate (`ModelConfig.kdaUsesBoundedGate`) both sides read, and the absent case routes to the softplus chain — which is elementwise, so with `A_log` already expanded per key channel it serves a per-channel gate with no new code. Whenever a config value's default means "the other formula", the selection belongs in a named predicate; a default that silently degenerates one branch is worse than either branch.
 
 ## The refusal was right and the process died anyway: a fallible re-init behind a deinit (2026-08-13)
 
-Making `KVCache.initWithConfigAndHeadDim` fallible was the previous section's fix — TurboQuant cannot serve a 192-wide MLA key, so say so at load instead of mid-request. It worked. `mlx-serve --model <Ling-3.0-tiny> --serve --kv-quant turbo4` printed the named refusal, correctly, and then died:
+Making the KVCache constructor fallible was the previous section's fix — a scheme that cannot serve a 192-wide MLA key should say so at load instead of mid-request. It worked. The refusal printed, correctly, and then the process died:
 
 ```
 --kv-quant turbo: cache key width 192 is not a power of two ...
@@ -2328,7 +2326,7 @@ The crash is not in the new check and not in the arch. Every site that re-applie
 
 ```zig
 xfm_ptr.cache.deinit();
-xfm_ptr.cache = try KVCache.initWithConfigAndHeadDim(...);
+xfm_ptr.cache = try KVCache.initWithConfig(...);
 ```
 
 Read that with an error in mind: `deinit` frees the entries slice and every mlx handle in it, `try` returns, and a FREED cache stays installed on the Transformer. The owner's own `deinit` then walks the same entries and frees all of it a second time. Four sites had the shape — the scheduler's cold load, main's offline path, `resetCache`, `tryRestoreCache` — because the pattern is the obvious way to write it and was correct for as long as the callee could not fail. **A constructor becoming fallible is a change to every caller that frees before calling it**, and nothing in the type system says so: the `try` was added at each site by the same patch that introduced the error, which is precisely when the freed-object window opened.
@@ -2336,7 +2334,7 @@ Read that with an error in mind: `deinit` frees the entries slice and every mlx 
 The fix is ordering, held in one place. `KVCache.reinit` builds the replacement, and only then frees and swaps:
 
 ```zig
-const fresh = try initWithConfigAndHeadDim(self.allocator, num_layers, config, head_dim);
+const fresh = try initWithConfig(self.allocator, num_layers, config);
 self.deinit();
 self.* = fresh;
 ```
@@ -4972,8 +4970,7 @@ donated, and assigned the handles fresh only after the grow and the writes. When
 failed (an MLX error, catchable since #353), the entry kept both freed handles and the next
 `resetCache` or `deinit` of that cache freed them again: SIGSEGV in `freeKVEntry`. Seen live when
 Qwen3-Embedding sub-batches shared the cache and a write failed on the batch dimension
-(`broadcast_shapes`). `updateAffine` already reset its handles at the free, and
-`updateTurboQuant` goes through it. Fix: reset the handles at the free; `writeAtOffset` releases
+(`broadcast_shapes`). `updateAffine` already reset its handles at the free. Fix: reset the handles at the free; `writeAtOffset` releases
 its result on the error path. A grow that fails after K but before V can leave their capacities
 apart; the error aborts that forward and the next request's reset restores a coherent pair.
 Guard (stale views): the `KVCache dense update` fault sweep over every checked op of an

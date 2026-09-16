@@ -600,13 +600,11 @@ pub const Slot = struct {
         // sentinel-empty fields so `Slot.deinit` is well-defined on both paths.
         const is_embedded = params.model.ds4_engine != null or params.model.llama_engine != null;
 
-        // Per-slot KVCache, honoring the process-level kv-quant setting.
-        // TurboQuant schemes need `head_dim` at construction time for the
-        // per-layer rotation matrices; other schemes ignore it. For embedded
-        // slots the engine owns its own cache — we initialize a zero-layer
-        // shell so `Slot.deinit` is symmetric with the MLX path.
+        // Per-slot KVCache, honoring the process-level kv-quant setting. For
+        // embedded slots the engine owns its own cache — we initialize a
+        // zero-layer shell so `Slot.deinit` is symmetric with the MLX path.
         const slot_kv_layers: u32 = if (is_embedded) 0 else config.num_hidden_layers;
-        var cache = try KVCache.initWithConfigAndHeadDim(allocator, slot_kv_layers, kv_quant_config, config.kvCacheKeyHeadDim());
+        var cache = try KVCache.initWithConfig(allocator, slot_kv_layers, kv_quant_config);
         errdefer cache.deinit();
 
         // Per-slot SSM cache. Mirror the same predicate `Transformer.init`
@@ -3556,7 +3554,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
     const kv_quant_config = params.config.kv_quant_override orelse params.kv_quant_config;
     const mtp_enabled = params.config.mtp_override orelse params.mtp_enabled;
     if (kv_quant_config.scheme != .off) {
-        try xfm_ptr.cache.reinit(params.config.num_hidden_layers, kv_quant_config, params.config.kvCacheKeyHeadDim());
+        try xfm_ptr.cache.reinit(params.config.num_hidden_layers, kv_quant_config);
     }
     Transformer.mtp_head_kv_quant_flag = params.mtp_head_kv_quant;
     try xfm_ptr.qwen4MtpApplyKvQuant(kv_quant_config);
@@ -9630,9 +9628,7 @@ test "group cost geometry rejects partial rounds and keeps complete cache format
     var b = a;
     b.group_size = 128;
     try testing.expect(cacheCostFormat(a) != cacheCostFormat(b));
-    b = a;
-    b.scheme = .turboquant_4;
-    try testing.expect(cacheCostFormat(a) != cacheCostFormat(b));
+    try testing.expect(cacheCostFormat(a) != cacheCostFormat(transformer_mod.KVQuantConfig.affine(4)));
 }
 
 test "scheduler prices each shared execution once and preserves row sampling geometry" {

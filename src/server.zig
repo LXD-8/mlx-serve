@@ -8276,7 +8276,6 @@ fn handleChatCompletions(
         switch (kq.scheme) {
             .off => log.info("  kv-quant override: off (per-request)\n", .{}),
             .affine => log.info("  kv-quant override: affine {d}-bit (per-request)\n", .{kq.bits}),
-            .turboquant_2, .turboquant_4 => log.info("  kv-quant override: turboquant {d}-bit (per-request)\n", .{kq.bits}),
         }
     }
     const kv_attn_explicit = parseKvAttnExplicit(root);
@@ -22172,11 +22171,8 @@ test "resolveKvAttnFusedPure: explicit > mode; auto keys on scheme + crossover" 
     try t.expect(resolveKvAttnFusedPure(.auto, null, KV_ATTN_AUTO_CROSSOVER_TOKENS, .affine));
     try t.expect(resolveKvAttnFusedPure(.auto, null, KV_ATTN_AUTO_CROSSOVER_TOKENS + 1, .affine));
     try t.expect(!resolveKvAttnFusedPure(.auto, null, KV_ATTN_AUTO_CROSSOVER_TOKENS - 1, .affine));
-    // Auto never engages on non-affine schemes (TurboQuant needs the
-    // rotation undo the fused path doesn't implement; off has no triples).
+    // Auto never engages off (no triples to consume).
     try t.expect(!resolveKvAttnFusedPure(.auto, null, 1 << 20, .off));
-    try t.expect(!resolveKvAttnFusedPure(.auto, null, 1 << 20, .turboquant_2));
-    try t.expect(!resolveKvAttnFusedPure(.auto, null, 1 << 20, .turboquant_4));
 }
 
 test "defaultEnableMtp: --mtp forces the native head on for MoE targets" {

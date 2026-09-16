@@ -17,6 +17,7 @@
 - **Spark-X2.5 1.7B/4B run natively.** `mlx-serve pull spark`. Thinking, tools, 1M context.
 - **Greedy sampling is greedy again.** `top_k: 1` and `top_p` near 0 cut by rank, so a bf16 tie no longer samples among tied tokens. With `top_k` set the sampler no longer ranks the whole vocabulary; the nucleus accumulates in f32.
 - **Speculation survives temperature.** Flash Next draws sampled drafts from the 32 candidates it already scores exactly: at two chats the speculated share goes from 19% to 98%. Greedy unchanged.
+- **`--kv-quant turbo2` / `turbo4` are gone.** A third slower than affine on long prompts and no fused path ever read them; `4` and `8` are the schemes.
 - **Concurrent sampled chats share one verify pass on Flash Next.** One filtered block of verify probabilities and one GPU submission per round instead of one each, so a later request in the group no longer waits on the earlier ones. (#434)
 - **Sampling with both `top_k` and `top_p` set makes one pass** over the vocabulary instead of two. Byte-identical.
 - **Speculative decoding can no longer emit a reserved token.** At temperature 0 the MTP, drafter and DFlash verifies skipped the reserved-token mask every other path applies.

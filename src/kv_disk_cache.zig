@@ -42,8 +42,7 @@
 //! [0, cp_pos) AND the SSM state at cp_pos (`restoreIntoHybrid`) — mirroring
 //! the RAM tier's rewind-both semantics.
 //!
-//! Scope: schemes off/affine (TurboQuant's rotation state doesn't survive a
-//! restore into a fresh cache), B==1 slot caches. All mlx work runs on the
+//! Scope: B==1 slot caches. All mlx work runs on the
 //! inference thread; safetensors loads use a private CPU stream
 //! (`Load::eval_gpu` is Not Implemented — the lora.zig/model.zig precedent).
 
@@ -1164,10 +1163,6 @@ pub const DiskTier = struct {
         const kv_target_u: usize = persistTargetLen(kv_entries, step, tokens.len);
         if (kv_target_u < MIN_PERSIST_TOKENS) return .skipped;
         const kv_target: u32 = @intCast(kv_target_u);
-        switch (config.scheme) {
-            .off, .affine => {},
-            else => return .skipped, // TurboQuant rotation state doesn't survive restore
-        }
         // Every initialized layer must cover the persisted range with B == 1
         // — anything else (mid-spec-decode state, batched cache) is not a
         // persistable snapshot.
@@ -4990,7 +4985,7 @@ test "DiskTier: SSM checkpoints persist incrementally under the flush byte cap" 
     try testing.expectEqual(@as(f32, 700.0), ssmArrVal(dst[0].ssm_state, 0, s));
 }
 
-test "DiskTier: short caches and TurboQuant schemes are never persisted" {
+test "DiskTier: short caches are never persisted" {
     const io = std.testing.io;
     const s = mlx.gpuStream();
     var tmp = std.testing.tmpDir(.{ .iterate = true });

@@ -1869,7 +1869,7 @@ other archs keep their previous arithmetic and advertised context.
 Design: `docs/reference.md`. The defects its review found, all in the
 eviction half: the spill read `appendCommit`'s bool ("nothing more to write")
 as "the SSD holds this session" and every silent skip (a declined volume, a
-prefix under `MIN_PERSIST_TOKENS`, TurboQuant, a short layer offset) returned
+prefix under `MIN_PERSIST_TOKENS`, a short layer offset) returned
 it too, so on a box under ~65 GiB free every idle entry was dropped with
 nothing written (`PersistOutcome`; only `.persisted` + an agreeing index
 + landed files + a stat license discarding RAM); the spill ignored
