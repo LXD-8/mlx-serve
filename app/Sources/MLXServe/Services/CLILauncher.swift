@@ -492,10 +492,11 @@ struct CLILauncherButton: View {
 
     var body: some View {
         Group {
-            if !detector.hasScanned {
-                // Still scanning — reserve the space with a placeholder so the
-                // footer doesn't reflow when scan finishes a moment later.
-                Color.clear.frame(width: 0, height: 0)
+            if !isEnabled || !detector.hasScanned {
+                // A disabled Menu with a plain button style draws no label, so
+                // the tile vanished with the server; show the gray face instead.
+                TrayTileFace(icon: "terminal", title: "Code", isEnabled: false)
+                    .help(isEnabled ? "Scanning for coding agents…" : "Start the server to launch a coding agent")
             } else {
                 Menu {
                     CLILauncherMenuItems(detector: detector, baseURL: baseURL,
@@ -519,7 +520,6 @@ struct CLILauncherButton: View {
                 .menuIndicator(.hidden)
                 .frame(maxWidth: .infinity)
                 .onHover { hovering = $0 }
-                .disabled(!isEnabled)
                 .help("Launch a coding agent — on this Mac (\(detector.available.isEmpty ? "none detected" : detector.available.map(\.displayName).joined(separator: ", "))) or inside the sandbox (pi, hermes)")
             }
         }

@@ -160,6 +160,7 @@ struct StatusMenuView: View {
     let openModel3DGen: () -> Void
     let openSettings: () -> Void
     let openServerLog: () -> Void
+    var openModelSettings: () -> Void = {}
     let openTasks: () -> Void
     var openAgents: () -> Void = {}
 
@@ -255,7 +256,16 @@ struct StatusMenuView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    modelPicker
+                    HStack(spacing: 6) {
+                        modelPicker
+                        Button { openModelSettings() } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .disabled(appState.selectedModelPath.isEmpty || server.lanChatModelId != nil || appState.useAppleModel)
+                        .help("Model Settings for the selected model (context, KV cache, MTP)")
+                    }
                     serverControls
                     serverFooterRow
 
@@ -420,10 +430,10 @@ struct StatusMenuView: View {
 
     private var serverFooterRow: some View {
         HStack {
-            Toggle("Auto-start on launch", isOn: $appState.autoStartServer)
+            Toggle("Start server with the app", isOn: $appState.autoStartServer)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                .help("Start the server when the app launches. It comes up with no model resident — models load on demand. To load one at start instead, see Settings ▸ Server.")
+                .help("Start the server when the app launches. Whether that start preloads a model is \"Preload the model when the server starts\" in Settings ▸ Server.")
             Spacer()
             // Which embedded engine the selected model routes to (MLX
             // safetensors, llama.cpp GGUF, or ds4 GGUF).
@@ -901,7 +911,7 @@ struct ServerControlButtonPresentation: Equatable {
             tint = .accent
             help = loadsModel
                 ? "Start the server and load the selected model."
-                : "Start the server with no model resident — it loads one on demand at your first message. Settings ▸ Server ▸ \"Load a model at start\" changes this."
+                : "Start the server with no model resident — it loads one on demand at your first message. Settings ▸ Server ▸ \"Preload the model when the server starts\" changes this."
             isProminent = true
         }
     }

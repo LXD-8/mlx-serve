@@ -90,6 +90,12 @@ struct MLXCoreApp: App {
                 openModel3DGen: { appState.showCreate(.model3d) },
                 openSettings: { appState.showSettings() },
                 openServerLog: { openAndFocus("serverLog") },
+                openModelSettings: {
+                    let path = appState.selectedModelPath
+                    appState.modelSettingsRequest = ModelSettingsRequest(
+                        path: path, title: ModelDisplayName.pretty((path as NSString).lastPathComponent))
+                    openAndFocus("modelSettings")
+                },
                 openTasks: { appState.showTasks() },
                 openAgents: { openAndFocus("agents") },
             )
@@ -198,6 +204,18 @@ struct MLXCoreApp: App {
                 .appAppearance()
         }
         .defaultSize(width: 900, height: 560)
+
+        // Per-model settings for the tray's selected model. A window, not a
+        // sheet: the MenuBarExtra popover cannot host one.
+        Window("Model Settings", id: "modelSettings") {
+            if let request = appState.modelSettingsRequest {
+                ModelSettingsSheet(request: request)
+                    .environmentObject(appState)
+                    .environmentObject(appState.server)
+                    .appAppearance()
+            }
+        }
+        .windowResizability(.contentSize)
 
         // A sandbox terminal moved out of the chat window ("Move Tab to New
         // Window", 2026-09-02). One window per session id; the session itself

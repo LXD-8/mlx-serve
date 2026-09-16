@@ -132,6 +132,8 @@ class AppState: ObservableObject {
     /// in flight. A RESTART is not tracked here — that one moves the server
     /// status, which the Start control already reports.
     @Published var loadingModelPath: String?
+    /// The model the "Model Settings" window edits (tray button); nil = closed.
+    @Published var modelSettingsRequest: ModelSettingsRequest?
     /// Bumped per hot-switch; each switch task captures its value so only the
     /// LATEST switch's completion clears `loadingModelPath` (see the didSet).
     private var modelSwitchGeneration = 0
@@ -653,7 +655,7 @@ class AppState: ObservableObject {
             }
         }
 
-        // Auto-start is headless unless "Load a model at start" resolves an installed
+        // Auto-start is headless unless "Preload the model when the server starts" resolves an installed
         // model (`refreshModels()` above fills the library the gate checks).
         let launchPlan = StartupModelChoice.launch(
             autoStart: autoStartServer,

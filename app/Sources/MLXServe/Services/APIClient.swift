@@ -200,6 +200,7 @@ class APIClient {
             drafterLoaded: meta["drafter_loaded"] as? Bool ?? false,
             drafterPath: meta["drafter_path"] as? String,
             mtpLoaded: meta["mtp_loaded"] as? Bool ?? false,
+            mtpAvailable: meta["mtp_available"] as? Bool,
             kvQuant: meta["kv_quant"] as? String ?? "",
             loaded: topLoaded,
             state: topState,

@@ -881,12 +881,16 @@ private struct LanSharingSectionContent: View {
         }
         // The privacy disclosure — sharing means running other people's
         // prompts, and using a network model means the host reads yours.
-        Text("Privacy: prompts sent to a model you share are processed on — and visible to — this Mac. Prompts you send to a network model are visible to the Mac hosting it. Traffic stays on your local network, and everything here is off unless you turn it on.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 4)
+        SearchableRow(searchText: ["Privacy", Self.privacyNote]) {
+            Text(Self.privacyNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
+        }
     }
+
+    private static let privacyNote = "Privacy: prompts sent to a model you share are processed on — and visible to — this Mac. Prompts you send to a network model are visible to the Mac hosting it. Traffic stays on your local network, and everything here is off unless you turn it on."
 
     /// One checkbox per local model name. Names are deduped — a GGUF and an
     /// MLX build of the same repo share a name and are shared together (the
@@ -930,6 +934,15 @@ private struct ProvidersSectionContent: View {
     @State private var saveError: String?
 
     var body: some View {
+        // One searchable row: a section whose content publishes no row count
+        // never collapses under the filter.
+        SearchableRow(searchText: ["Providers", "OpenAI-compatible chat endpoints", "cloud API", "providers.json", "API key"]
+                      + entries.map(\.name)) {
+            providersBody
+        }
+    }
+
+    private var providersBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             if entries.isEmpty {
                 Text("No providers yet.")
@@ -1190,10 +1203,18 @@ private struct ServerSectionContent: View {
     }
 
     var body: some View {
-        // Whether and which model loads at start; auto-start itself is the tray's toggle.
+        // Same value as the tray's toggle.
         SettingsRow(
-            title: "Load a model at start",
-            explainer: "Off by default. Auto-start brings the server up with no model resident; it loads one on demand at your first message, so login stays fast. Turn this on to pay for the load up front instead — a large checkpoint can take a while and holds the memory from the moment you log in."
+            title: "Start server when the app launches",
+            explainer: "The server comes up as soon as the app does. Off means you start it from the tray."
+        ) {
+            Toggle("", isOn: $appState.autoStartServer)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        SettingsRow(
+            title: "Preload the model when the server starts",
+            explainer: "Off by default: every start, automatic or from the Start Server button, comes up with no model resident and loads one on demand at your first message, so login stays fast. On pays for the load up front. A large checkpoint can take a while and holds the memory from the moment the server is up."
         ) {
             Toggle("", isOn: $appState.loadModelAtStart)
                 .labelsHidden()

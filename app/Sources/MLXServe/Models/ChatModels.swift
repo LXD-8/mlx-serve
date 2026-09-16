@@ -472,6 +472,8 @@ struct ModelInfo {
     /// the server loaded the native multi-token-prediction head. Drives the
     /// "+MTP" speedup badge under the model name in the tray.
     var mtpLoaded: Bool = false
+    /// `meta.mtp_available`: the checkpoint ships an MTP head. nil on older servers.
+    var mtpAvailable: Bool? = nil
     /// `meta.kv_quant`: "off" | "4" | "8" | … — the width THIS model stores at. Empty on older servers.
     var kvQuant: String = ""
     /// Plan 05 Phase G — multi-model fields. All optional so older
@@ -979,6 +981,8 @@ struct LocalModel: Identifiable, Hashable {
     var numExperts: Int? = nil
     /// Active MoE experts per token (`num_experts_per_tok`).
     var activeExperts: Int? = nil
+    /// The dir ships an MTP head (`DownloadManager.dirHasMtpHead`).
+    var hasMtpHead: Bool = false
     /// The `.gguf` basename this model IS, when it's one quant of a GGUF repo.
     /// A repo folder holds many quants and each is separately loadable, so
     /// discovery emits one `LocalModel` per file and `path` points at the file.

@@ -1591,6 +1591,21 @@ pub fn resolveMtpSource(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Di
     return null;
 }
 
+/// Qwen3.8-Flash-Next's head is the checkpoint's own layer, loaded by the
+/// trunk (`loadQwen4Mtp`), never through `resolveMtpSource`.
+const qwen4_mtp_marker = "\"language_model.mtp.fc_hidden.weight\"";
+
+fn indexJsonHasQwen4Mtp(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir) bool {
+    const bytes = readDirFileAlloc(io, allocator, dir, "model.safetensors.index.json", checkpoint_header_limit) orelse return false;
+    defer allocator.free(bytes);
+    return std.mem.indexOf(u8, bytes, qwen4_mtp_marker) != null;
+}
+
+/// Advertisement probe: ANY head the server can run, including qwen4's.
+pub fn dirAdvertisesMtp(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir) bool {
+    return resolveMtpSource(io, allocator, dir) != null or indexJsonHasQwen4Mtp(io, allocator, dir);
+}
+
 /// True when `model_dir` carries an MTP head we know how to load — a
 /// sidecar file OR in-checkpoint tensors. `model_dir` is absolute (same
 /// contract as `model.parseConfig`).
