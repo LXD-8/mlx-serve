@@ -2947,6 +2947,19 @@ fn handleOllamaGenerate(allocator: std.mem.Allocator, stream: *Conn, body: []con
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer tr.deinit(allocator);
+    if (tr.load_only) {
+        log.info("POST /api/generate (no prompt) -> load handshake for {s}\n", .{tr.model});
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        var iso_buf: [32]u8 = undefined;
+        try out.writer.writeAll("{\"model\":");
+        try ollama_mod.writeJsonString(&out.writer, tr.model);
+        try out.writer.writeAll(",\"created_at\":");
+        try ollama_mod.writeJsonString(&out.writer, ollama_mod.formatIso8601(&iso_buf, nowMs(stream.io)));
+        try out.writer.writeAll(",\"response\":\"\",\"done\":true,\"done_reason\":\"load\"}");
+        try sendResponse(stream, "200 OK", "application/json", out.written());
+        return;
+    }
     log.debug("POST /api/generate (stream={any}, raw={any}) -> inner {s}\n", .{ tr.wants_stream, tr.raw, if (tr.raw) "/v1/completions" else "/v1/chat/completions" });
     var sink = ollama_mod.Sink.init(allocator, .{
         .mode = .generate,
@@ -7317,6 +7330,10 @@ fn handleEmbeddings(
         seqs.deinit(allocator);
     }
     for (texts.items) |text| {
+        if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
+            try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "'input' entries must be non-empty strings", null);
+            return;
+        }
         const raw_ids = try tok.encode(allocator, text);
         // Bidirectional embedding models (EmbeddingGemma) declare
         // add_bos_token + add_eos_token; the SentencePiece encode path adds
@@ -7644,6 +7661,8 @@ const AnthropicOutputConfig = struct {
     effort: ?[]const u8 = null,
     /// `format.schema` when `format.type == "json_schema"`; null otherwise.
     schema: ?std.json.Value = null,
+    /// `format.type == "json_schema"` with no object schema to enforce.
+    schema_invalid: bool = false,
 };
 
 fn parseAnthropicOutputConfig(root: std.json.ObjectMap) AnthropicOutputConfig {
@@ -7656,7 +7675,13 @@ fn parseAnthropicOutputConfig(root: std.json.ObjectMap) AnthropicOutputConfig {
     if (oc.object.get("format")) |f| {
         if (f == .object) {
             const ftype = if (f.object.get("type")) |t| (if (t == .string) t.string else "") else "";
-            if (std.mem.eql(u8, ftype, "json_schema")) out.schema = f.object.get("schema");
+            if (std.mem.eql(u8, ftype, "json_schema")) {
+                out.schema = f.object.get("schema");
+                if (out.schema == null or out.schema.? != .object) {
+                    out.schema = null;
+                    out.schema_invalid = true;
+                }
+            }
         }
     }
     return out;
@@ -7891,6 +7916,7 @@ fn handleChatCompletions(
     }
 
     var messages = std.ArrayList(chat_mod.Message).empty;
+    var image_decode_failed = false;
     defer messages.deinit(allocator);
 
     // Decoded image/video/audio buffers for every message in this request.
@@ -7955,7 +7981,7 @@ fn handleChatCompletions(
                         if (img_obj != .object) continue;
                         const url_val = img_obj.object.get("url") orelse continue;
                         if (url_val != .string) continue;
-                        appendImageUrlContent(allocator, media.images(img_slot), url_val.string, visionPreprocFromConfig(config));
+                        if (!appendImageUrlContent(allocator, media.images(img_slot), url_val.string, visionPreprocFromConfig(config))) image_decode_failed = true;
                     } else if (std.mem.eql(u8, ptype.string, "video_url")) {
                         if (!decode_this_message) continue;
                         // A video is, on the wire, an ordered array of already-
@@ -8056,6 +8082,11 @@ fn handleChatCompletions(
         });
     }
 
+    if (image_decode_failed) {
+        log.warn("POST /v1/chat/completions -> 400 (undecodable image)\n", .{});
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", IMAGE_DECODE_REJECT, 400);
+        return;
+    }
     if (messages.items.len == 0) {
         log.warn("POST /v1/chat/completions -> 400 (no valid messages)\n", .{});
         try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "No valid messages found in request", 400);
@@ -8156,10 +8187,10 @@ fn handleChatCompletions(
     defer stop_sequences.deinit(allocator);
     if (root.get("stop")) |stop_val| {
         switch (stop_val) {
-            .string => |s| try stop_sequences.append(allocator, s),
+            .string => |s| if (s.len > 0) try stop_sequences.append(allocator, s),
             .array => |arr| {
                 for (arr.items) |item| {
-                    if (item == .string) try stop_sequences.append(allocator, item.string);
+                    if (item == .string and item.string.len > 0) try stop_sequences.append(allocator, item.string);
                 }
             },
             else => {},
@@ -8191,6 +8222,11 @@ fn handleChatCompletions(
         if (rf == .object) {
             const rf_type = if (rf.object.get("type")) |t| (if (t == .string) t.string else "") else "";
             if (std.mem.eql(u8, rf_type, "json_schema")) {
+                const declared: ?std.json.Value = if (rf.object.get("json_schema")) |js| (if (js == .object) js.object.get("schema") else null) else null;
+                if (declared == null or declared.? != .object) {
+                    try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "response_format.json_schema.schema must be a JSON object (use {\"type\":\"json_object\"} for unconstrained JSON)", 400);
+                    return;
+                }
                 // Extract the schema JSON string from the raw body
                 var schema_instruction = std.ArrayList(u8).empty;
                 defer schema_instruction.deinit(allocator);
@@ -8702,10 +8738,10 @@ fn handleCompletions(
     defer stop_sequences.deinit(allocator);
     if (root.get("stop")) |stop_val| {
         switch (stop_val) {
-            .string => |s| try stop_sequences.append(allocator, s),
+            .string => |s| if (s.len > 0) try stop_sequences.append(allocator, s),
             .array => |arr| {
                 for (arr.items) |item| {
-                    if (item == .string) try stop_sequences.append(allocator, item.string);
+                    if (item == .string and item.string.len > 0) try stop_sequences.append(allocator, item.string);
                 }
             },
             else => {},
@@ -14025,23 +14061,29 @@ const RequestMedia = struct {
 /// of it — one per tower call. Only LFM2-VL ever yields more than one: past its
 /// single-tile token budget it splits the source into a tile grid plus a
 /// thumbnail, and each piece is encoded separately. Every other arch appends
-/// exactly one entry, or none when the payload can't be decoded.
+/// exactly one entry. Returns false when nothing could be decoded (a remote
+/// URL, bad base64, an unreadable payload) so the caller can refuse by name
+/// instead of answering a prompt the image silently fell out of.
 pub fn appendImageUrlContent(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(chat_mod.ImageData),
     url: []const u8,
     vp: chat_mod.VisionPreproc,
-) void {
+) bool {
+    const before = list.items.len;
     if (vp.mode == .lfm2 and vp.tile_size > 0 and std.mem.startsWith(u8, url, "data:image/") and
         !std.mem.startsWith(u8, url, "data:image/x-mlx-pixels"))
     {
         appendLfm2Tiles(allocator, list, url, vp);
-        return;
+        return list.items.len > before;
     }
     if (parseImageUrlContent(allocator, url, vp)) |img| {
         list.append(allocator, img) catch allocator.free(img.pixels);
     }
+    return list.items.len > before;
 }
+
+const IMAGE_DECODE_REJECT = "image could not be decoded: send a base64 data URL (data:image/jpeg|png|webp;base64,...) with a readable payload; remote URLs are not fetched";
 
 /// `Lfm2VlImageProcessor.resize_and_split`: a source inside the budget is one
 /// resized image; past it, the WHOLE image is resized onto a `cols`x`rows`
@@ -14755,6 +14797,7 @@ fn handleAnthropicMessages(
     }
 
     var messages = std.ArrayList(chat_mod.Message).empty;
+    var image_decode_failed = false;
     defer messages.deinit(allocator);
 
     // Decoded image buffers for every message in this request. `Message`
@@ -14879,7 +14922,7 @@ fn handleAnthropicMessages(
                             };
                             if (data_url) |du| {
                                 defer allocator.free(du);
-                                appendImageUrlContent(allocator, media.images(img_slot), du, visionPreprocFromConfig(config));
+                                if (!appendImageUrlContent(allocator, media.images(img_slot), du, visionPreprocFromConfig(config))) image_decode_failed = true;
                             }
                         }
                     }
@@ -14993,6 +15036,11 @@ fn handleAnthropicMessages(
 
     if (try chat_mod.foldSystemMessages(allocator, &messages)) |joined| try content_allocs.append(allocator, joined);
 
+    if (image_decode_failed) {
+        log.warn("POST /v1/messages -> 400 (undecodable image)\n", .{});
+        try sendAnthropicError(allocator, stream, "invalid_request_error", IMAGE_DECODE_REJECT, 400);
+        return;
+    }
     if (messages.items.len == 0) {
         try sendAnthropicError(allocator, stream, "invalid_request_error", "No valid messages found in request", 400);
         return;
@@ -15057,7 +15105,7 @@ fn handleAnthropicMessages(
     if (root.get("stop_sequences")) |stop_val| {
         if (stop_val == .array) {
             for (stop_val.array.items) |item| {
-                if (item == .string) try stop_sequences.append(allocator, item.string);
+                if (item == .string and item.string.len > 0) try stop_sequences.append(allocator, item.string);
             }
         }
     }
@@ -15094,6 +15142,10 @@ fn handleAnthropicMessages(
     // budget derived from the word; the word itself rides through to templates
     // that read it (qwen3.8's preamble, dsv4's).
     const output_cfg = parseAnthropicOutputConfig(root);
+    if (output_cfg.schema_invalid) {
+        try sendAnthropicError(allocator, stream, "invalid_request_error", "output_config.format.schema must be a JSON object when format.type is json_schema", 400);
+        return;
+    }
     var effort_word: ?[]const u8 = null;
     if (output_cfg.effort) |word| {
         const cfg = reasoningEffortFromWord(word, server_config.default_reasoning_budget, effortWordOnly(allocator, lm, tok));
@@ -16742,6 +16794,10 @@ fn handleResponsesInner(
             log.debug("[responses] using top-level response_format as text.format alias\n", .{});
         }
     }
+    if (std.mem.eql(u8, text_format.kind, "json_schema") and (text_format.schema_value == null or text_format.schema_value.? != .object)) {
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "text.format.schema must be a JSON object when format.type is json_schema (use {\"type\":\"json_object\"} for unconstrained JSON)", 400);
+        return;
+    }
     const wants_json = std.mem.eql(u8, text_format.kind, "json_schema") or std.mem.eql(u8, text_format.kind, "json_object");
     // Belt + braces, mirroring the chat-completions path: bare `json_object`
     // carries no schema, so without a synthesized permissive one there is no
@@ -16825,9 +16881,9 @@ fn handleResponsesInner(
     var stop_sequences = std.ArrayList([]const u8).empty;
     defer stop_sequences.deinit(allocator);
     if (root.get("stop")) |sv| switch (sv) {
-        .string => |s| try stop_sequences.append(allocator, s),
+        .string => |s| if (s.len > 0) try stop_sequences.append(allocator, s),
         .array => |arr| for (arr.items) |it| {
-            if (it == .string) try stop_sequences.append(allocator, it.string);
+            if (it == .string and it.string.len > 0) try stop_sequences.append(allocator, it.string);
         },
         else => {},
     };
@@ -16897,6 +16953,11 @@ fn handleResponsesInner(
     };
     defer pi.deinit();
 
+    if (pi.image_decode_failed) {
+        log.warn("POST /v1/responses -> 400 (undecodable image)\n", .{});
+        try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", IMAGE_DECODE_REJECT, 400);
+        return;
+    }
     if (pi.messages.items.len == 0) {
         try sendErrorResponse(allocator, stream, "400 Bad Request", "invalid_request_error", "No valid messages found in 'input'", 400);
         return;
@@ -21016,6 +21077,19 @@ test "parseAnthropicOutputConfig: absent, non-object, and non-schema shapes stay
         defer parsed.deinit();
         const oc = parseAnthropicOutputConfig(parsed.value.object);
         try std.testing.expect(oc.schema == null);
+        try std.testing.expect(!oc.schema_invalid);
+    }
+    // json_schema declared with nothing to enforce is flagged, never a silent fall-open.
+    for ([_][]const u8{
+        \\{"output_config":{"format":{"type":"json_schema"}}}
+        ,
+        \\{"output_config":{"format":{"type":"json_schema","schema":"nope"}}}
+        ,
+    }) |body| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+        defer parsed.deinit();
+        const oc = parseAnthropicOutputConfig(parsed.value.object);
+        try std.testing.expect(oc.schema == null and oc.schema_invalid);
     }
     // The effort-alone case still carries its word.
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator,

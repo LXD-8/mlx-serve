@@ -1,5 +1,15 @@
 # Changelog
 
+## v26.9.4 — Request edges
+
+- **`top_p: 0` is greedy.** It masked every token and sampled random vocabulary; it now behaves like `top_k: 1`.
+- **An image the server cannot read is refused by name.** A remote image URL (never fetched), bad base64 or an unreadable payload used to vanish from the prompt and answer "you haven't provided an image" with a 200 on every surface; it is a 400 that says what to send.
+- **Structured-output and stop-sequence edges.** A `json_schema` request without an object schema is a 400 instead of unconstrained JSON, on chat, Messages and Responses; an empty stop string no longer cuts the reply at position 0.
+- **Ollama and embeddings edges.** `/api/generate` with no prompt answers Ollama's load handshake (`done_reason: load`) instead of a 400, and an empty `/v1/embeddings` input is a 400 instead of a 500.
+- **Qwen3.8 Flash Next no longer crashes past 10 concurrent streams.** Reshuffling the batched decode group overran a fixed buffer and segfaulted the server; 32 streams now decode together (185 tok/s aggregate on M4 Max).
+
+---
+
 ## v26.9.3 — Flash Next on 64 GB, speculation for everyone, Neural Engine media
 
 ### Highlights

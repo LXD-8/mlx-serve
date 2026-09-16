@@ -13215,11 +13215,12 @@ fn applyTopP(res: *mlx.mlx_array, logits: mlx.mlx_array, top_p: f32, nucleus_bou
 
     // Mass STRICTLY above each rank — an exclusive scan down the ranking, so the
     // term is a function of the shortlist alone (everything outranking a top-k
-    // column is itself top-k). Rank 0 sees 0, so the argmax is always kept.
+    // column is itself top-k). Rank 0 sees 0, so the argmax is always kept —
+    // the threshold floors above 0 so a literal top_p 0 is greedy, not empty.
     var above = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(above);
     try mlx.check(mlx.mlx_cumsum(&above, probs, -1, false, false, s));
-    const threshold = mlx.mlx_array_new_float(top_p);
+    const threshold = mlx.mlx_array_new_float(@max(top_p, std.math.floatMin(f32)));
     defer _ = mlx.mlx_array_free(threshold);
     var in_nucleus = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(in_nucleus);
@@ -19096,6 +19097,33 @@ test "applyTopP keeps the exact nucleus on a bf16 vocab row" {
         const got = samplerTestKeptCount(res_host);
         const diff = @as(i64, @intCast(want)) - @as(i64, @intCast(got));
         try testing.expect(diff >= -1 and diff <= 1);
+    }
+}
+
+test "applyTopP at top_p 0 keeps exactly the argmax" {
+    // The nucleus is "mass strictly above the rank < top_p"; rank 0 sees 0, so a
+    // literal 0 kept nothing and the sampler drew uniformly from the vocabulary.
+    const allocator = testing.allocator;
+    const s = mlx.gpuStream();
+    const v: usize = 8192;
+    const host = try allocator.alloc(f32, v);
+    defer allocator.free(host);
+    samplerTestRow(host, 0x9E3779B97F4A7C15, 4.0);
+    const shape = [_]c_int{ 1, @intCast(v) };
+    const row = mlx.mlx_array_new_data(host.ptr, &shape, 2, .float32);
+    defer _ = mlx.mlx_array_free(row);
+    for ([_]u32{ 0, 40 }) |bound| {
+        var res = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(res);
+        try applyTopP(&res, row, 0.0, bound, s);
+        const res_host = try samplerTestReadFlat(allocator, res, v, s);
+        defer allocator.free(res_host);
+        try testing.expectEqual(@as(usize, 1), samplerTestKeptCount(res_host));
+        var best: usize = 0;
+        for (host, 0..) |x, i| if (x > host[best]) {
+            best = i;
+        };
+        try testing.expect(std.math.isFinite(res_host[best]));
     }
 }
 

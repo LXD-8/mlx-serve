@@ -9241,7 +9241,8 @@ fn ssmRepackMembers(
             continue;
         }
         var parts: [MAX_BATCH_ROWS]mlx.mlx_array = undefined;
-        var views: [MAX_BATCH_ROWS]mlx.mlx_array = undefined;
+        // conv + ssm + aux per row.
+        var views: [3 * MAX_BATCH_ROWS]mlx.mlx_array = undefined;
         var n_views: usize = 0;
         defer {
             var v: usize = 0;
@@ -10400,6 +10401,29 @@ test "persistent group: drop failure exports survivor rows" {
     xfm.ssmGroupDrop(slots[0].entries);
     xfm.ssm_group.allocator = drop_alloc;
     try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(slots[1].entries[0].conv_state, want, s));
+}
+
+test "persistent group: a full-width group repacks when a member leaves" {
+    if (mlx.noGpuBackend()) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    const s = mlx.gpuStream();
+    var cache = try KVCache.init(alloc, 1);
+    defer cache.deinit();
+    const kinds = try ssmTickKinds(alloc, 0);
+    defer alloc.free(kinds);
+    var slots: [MAX_BATCH_ROWS]SsmTickSlot = undefined;
+    var ctxs: [MAX_BATCH_ROWS]*ForwardCtx = undefined;
+    for (&slots, 0..) |*sl, i| {
+        sl.* = try SsmTickSlot.init(alloc, s, kinds, &cache, @as(f32, @floatFromInt(i + 1)));
+        sl.bind();
+        ctxs[i] = &sl.ctx;
+    }
+    defer for (&slots) |*sl| sl.deinit(alloc);
+    var xfm = ssmTickStubXfm(alloc, s, true);
+    defer xfm.ssm_group.deinit();
+    try ssmTickBindXfm(&xfm, &ctxs, kinds);
+    try ssmTickBindXfm(&xfm, ctxs[1..], kinds);
+    try std.testing.expect(xfm.ssm_group.matches(ctxs[1..]));
 }
 
 test "persistent group: forwardWith releases a bound member between batched ticks" {

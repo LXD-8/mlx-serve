@@ -2,6 +2,9 @@
 
 Full histories: live failures, measurements, diagnosis ladders, dead ends. The distilled RULES live in the root CLAUDE.md "Rules" section — when a rule changes, update the story here too. New gotchas in this domain: add the 1-3 line rule to root, the full story here.
 
+### `top_p: 0` masked every token and sampled uniform garbage (2026-09-16)
+The nucleus keeps a rank while the mass STRICTLY above it is `< top_p`. Rank 0 sees exactly 0, so a literal `top_p: 0` (what clients send for "greedy") kept nothing: the row went `-inf` everywhere and the categorical draw was uniform over 248k ids ("będziemyWATCH끈 გა stimulation"). 0.001 and up were fine, which is why no sweep ever saw it. Fix: the threshold floors at `floatMin(f32)`, so rank 0 is always inside and `top_p 0` is greedy like `top_k 1`. Guard: `applyTopP at top_p 0 keeps exactly the argmax` (generate.zig) + `tests/test_api_edges.sh` (top_p 0 == temperature 0 live).
+
 ### Every sampled token ranked the whole vocabulary; a shortlist is exact only if it ranks the way the row does
 `applyTopP` argsorted 248,320 logits per sampled token and `applyTopK` paid a second pass through `mlx_argpartition`. On Metal `Partition::eval_gpu` and `ArgPartition::eval_gpu` "direct partition to sort for now", so `mlx_topk` and `mlx_argpartition` ARE the multi-block merge sort and buy nothing. Qwen3.8-Flash-Next on M4 Max, MTP off: 65.0 tok/s greedy vs 60.5 at temperature 1 / top_p 0.95 / top_k 20.
 

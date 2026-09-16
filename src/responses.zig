@@ -314,6 +314,7 @@ pub const ParsedInput = struct {
     owned_tool_calls: std.ArrayList([]chat_mod.ToolCall),
     owned_images: std.ArrayList([]chat_mod.ImageData),
     allocator: std.mem.Allocator,
+    image_decode_failed: bool = false,
 
     pub fn deinit(self: *ParsedInput) void {
         for (self.owned_strings.items) |s| self.allocator.free(s);
@@ -331,7 +332,8 @@ pub const ParsedInput = struct {
 
 /// Decode a single image_url string into preprocessed pixels. Provided as a
 /// callback because the actual decoder lives in `server.zig` (uses stb_image
-/// + libwebp). Returning null is fine — the input item will lack images.
+/// + libwebp). Returns whether it appended anything; a false is recorded as
+/// `image_decode_failed` so the surface can refuse the request by name.
 /// Appends one entry per tower call an `image_url` expands into — usually one,
 /// but LFM2-VL splits a large source into tiles plus a thumbnail. Appending
 /// rather than returning is what lets a single URL produce several.
@@ -340,7 +342,7 @@ pub const ImageUrlDecoder = *const fn (
     list: *std.ArrayList(chat_mod.ImageData),
     url: []const u8,
     vp: chat_mod.VisionPreproc,
-) void;
+) bool;
 
 /// Translate a Responses `input` value (string or array of input items) into
 /// `chat_mod.Message`s. Optionally prepends `instructions` as the single leading
@@ -464,7 +466,9 @@ fn appendMessageItem(
                         .object => |io| if (io.get("url")) |u| (if (u == .string) u.string else continue) else continue,
                         else => continue,
                     };
-                    if (image_decoder) |dec| dec(allocator, &image_list, url, vp);
+                    if (image_decoder) |dec| if (!dec(allocator, &image_list, url, vp)) {
+                        pi.image_decode_failed = true;
+                    };
                 }
             }
             if (text_parts.items.len > 0) {
@@ -889,6 +893,22 @@ test "parseInput reads a developer item as the system turn" {
     try testing.expectEqual(@as(usize, 2), pi.messages.items.len);
     try testing.expectEqualStrings("system", pi.messages.items[0].role);
     try testing.expectEqualStrings("You are S.", pi.messages.items[0].content);
+}
+
+fn testRejectingDecoder(_: std.mem.Allocator, _: *std.ArrayList(chat_mod.ImageData), _: []const u8, _: chat_mod.VisionPreproc) bool {
+    return false;
+}
+
+test "parseInput records an input_image the decoder could not read" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\[{"role":"user","content":[{"type":"input_text","text":"what is this"},{"type":"input_image","image_url":"http://example.invalid/x.png"}]}]
+    , .{});
+    defer parsed.deinit();
+    var pi = try parseInput(allocator, parsed.value, null, null, testRejectingDecoder, .{});
+    defer pi.deinit();
+    try std.testing.expect(pi.image_decode_failed);
+    try std.testing.expectEqual(@as(usize, 1), pi.messages.items.len);
 }
 
 test "parseInput with instructions prepends system" {
