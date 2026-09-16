@@ -29,6 +29,14 @@
 
 ### Changes
 
+- Qwen3.8 Flash Next processes prompts faster by fusing hyper-connection and GatedDeltaNet prefill operations.
+
+- Restarting the server now reuses the whole of a long conversation from the SSD cache again. A text prompt that happened to contain the id the model uses for images made the disk cache treat the conversation as if it began there, so a 73k-token chat resumed from 16k and spent 34 seconds re-reading itself instead of 1.6.
+
+- New app icon. The tray footer is four tiles like the media row, and the power glyph is a red Quit.
+- The launcher offers a plain Shell beside the coding agents, on this Mac and in the sandbox.
+- A plain Shell terminal opens on click in the working folder from Settings; the coding agents (pi, opencode, Claude Code, …) ask which folder to work in.
+- `--mtp-head-kv-quant` lets Flash Next's speculative head store its cache at the model's `--kv-quant` precision, about 1 GB saved at 1M tokens with no measurable loss in acceptance. Off by default.
 - A reply cut for repeating itself ends with `finish_reason: "stop"` and `finish_details: {"type": "repetition_loop"}`, not a token-limit look-alike. (#327)
 - Stopping a turn mid-thought or after a tool result leaves a footer (time, Regenerate, delete); the trash under an agent reply removes the whole turn. (#426)
 - Voice recordings and audio attachments are saved beside the chat as 16 kHz WAV. (#430)

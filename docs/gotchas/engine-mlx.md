@@ -5011,6 +5011,24 @@ from the composed chain, so the parity test moved from bit identity to RMS error
 truth no worse than the chain's. Rule: a short-K kernel's cost is its reductions and its lane
 balance; hoist per lane, and A/B kernels only interleaved.
 
+## Prefill fusion must preserve the compiled BF16 chain
+
+An eager reference can hide rounding changes introduced by MLX compilation.
+HC prefill keeps the native inject matmul, rounds the mean reciprocal to BF16
+before multiplying (including HC=3/5/6/7), and derives HC/hidden dimensions from
+the config and weights. HC and GDN share an MLX-generated BF16 sigmoid table.
+The width bound includes the chunker's coalesced tail. Unsupported shapes use
+the composed path; `MLX_SERVE_HC_PREFILL=0` and `MLX_SERVE_GDN_PREFILL_FUSED=0`
+restore it. Guards compare HC against compiled write/mix and GDN against
+`computeGdnGate`, covering cold history, batch 2, tail widths and decline gates.
+
+The first cut carried the chunk width as a Metal template arg (`S` on the
+prework and norm-gate kernels, `M` on the HC mix). MLX compiles one pipeline per
+template set, so every NOVEL prompt length paid three JIT compiles: 700-token
+prefill 957 ms on a repeated length, 1060 ms on a new one (M4 Max), which is a
+net loss below ~1k tokens and invisible to llmprobe (a rung repeats one length).
+The width now rides in as a 0-dim int input (`seq` / `rows`, exposed as a plain
+scalar like `eps`) and only the sigmoid-table switch (`TAB`) is a template.
 ### A group's sampled accept was a staircase of one-row filters (2026-09-15)
 On qwen4_exp a concurrent group's MTP round verifies every row in ONE row-axis forward whose lm_head
 projects the whole group at once — and then threw that block away. Each sampled row's `mtpRoundFinish`
