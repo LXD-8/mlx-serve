@@ -146,7 +146,7 @@ class ServerManager: ObservableObject {
     /// ChatTurnEngine, the avatar) before a turn: when the running server was
     /// started headless for media generation, hot-load the user's selected
     /// chat model by ABSOLUTE PATH (works for org/name two-level dirs; the
-    /// server dedups by path and promotes the first chat-capable load to its
+    /// server dedups by path and promotes the latest chat-capable load to its
     /// default, so the alias-addressed request that follows resolves).
     /// Failures are left to the request itself to surface.
     func ensureDefaultChatModel(selectedModelPath: String) async {

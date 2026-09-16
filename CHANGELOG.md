@@ -8,6 +8,7 @@
 - **Ollama and embeddings edges.** `/api/generate` with no prompt answers Ollama's load handshake (`done_reason: load`) instead of a 400, and an empty `/v1/embeddings` input is a 400 instead of a 500.
 - **`/props` reports the serving settings.** A new `settings` object names the effective KV quant, MTP mode and acceptance, drafter, PLD, decode attention quant and prefill chunk for the loaded model, and `GET /props?model=<id>` picks the model, so a benchmark can record what it ran under.
 - **Qwen3.8 Flash Next no longer crashes past 10 concurrent streams.** Reshuffling the batched decode group overran a fixed buffer and segfaulted the server; 32 streams now decode together (185 tok/s aggregate on M4 Max).
+- **A request with no `model` no longer swaps out the model you loaded.** On a server started without a model, the default stayed on the first chat model ever loaded, so a model-less request evicted the current one to reload it; the default now follows the latest chat load.
 
 ---
 
