@@ -126,7 +126,7 @@ struct ModelSettingsSheet: View {
             // A grouped Form is a scroll view with no ideal height: hosted in a
             // Window it collapsed to nothing.
             .frame(height: formHeight)
-            Text(footnote)
+            Text(L10n.text(footnote))
                 .font(.caption2).foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
             if let error {
@@ -135,7 +135,7 @@ struct ModelSettingsSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(plan == .restart ? "Save & Restart" : "Save") { Task { await save() } }
+                Button(L10n.text(plan == .restart ? "Save & Restart" : "Save")) { Task { await save() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(busy)
             }
