@@ -190,7 +190,7 @@ enum AgentConfigs {
     /// snapshot. `models.json` keeps the served model as the static
     /// fallback — an unreachable server registers NOTHING.
     ///
-    /// Contracts verified against pi 0.80.10 (the pinned sandbox version):
+    /// Contracts verified against pi 0.80.10:
     /// extensions default-export a factory; `applyExtension` spreads ONLY
     /// the model definition, so `compat` must ride EVERY model (the
     /// provider-level compat in models.json is not inherited); `cost` is a

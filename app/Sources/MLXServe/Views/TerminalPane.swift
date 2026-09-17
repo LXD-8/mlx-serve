@@ -48,11 +48,24 @@ struct TerminalPane: View {
                 EmbeddedTerminalView(handle: handle)
             }
         case .exited:
-            notice {
-                Text(terminals.sessions.exitNotice(session.id) ?? "session ended")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button("Close") { appState.closeTerminal(session.id) }
-                    .controlSize(.small)
+            if let handle = terminals.handle(for: session.id) {
+                EmbeddedTerminalView(handle: handle)
+                Divider()
+                HStack(spacing: 8) {
+                    Text(terminals.sessions.exitNotice(session.id) ?? "session ended")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Close") { appState.closeTerminal(session.id) }
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            } else {
+                notice {
+                    Text(terminals.sessions.exitNotice(session.id) ?? "session ended")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Close") { appState.closeTerminal(session.id) }
+                        .controlSize(.small)
+                }
             }
         case .failed(let message):
             notice {
@@ -82,8 +95,8 @@ struct TerminalPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Fixes that resolve right here retry the row in place; the two that
-    /// send the user elsewhere (re-pull, Settings) leave it for Retry.
+    /// Fixes that resolve right here retry the row in place; re-pull sends
+    /// the user elsewhere and leaves it for Retry.
     private func apply(_ fix: TerminalFailureFix, to id: UUID) {
         switch fix {
         case .startServer:
@@ -98,8 +111,13 @@ struct TerminalPane: View {
         case .enableNetworking:
             appState.serverOptions.sandbox.network = true
             terminals.retry(id)
+        case .enableSandbox:
+            var opts = appState.serverOptions
+            opts.sandbox.enabled = true
+            opts.sandbox.network = true
+            appState.serverOptions = opts
+            terminals.retry(id)
         case .repullImage: Task.detached { AgentSandbox.shared.repullBaseImage() }
-        case .openSettings: appState.showSettings()
         }
     }
 
@@ -138,20 +156,20 @@ struct TerminalPane: View {
 /// The one-click fix a failed row offers, sniffed off our own preflight /
 /// boot messages (the same match the old window's alerts made).
 enum TerminalFailureFix {
-    case startServer, enableNetworking, repullImage, openSettings
+    case startServer, enableSandbox, enableNetworking, repullImage
 
     var title: String {
         switch self {
         case .startServer: return "Start Server"
+        case .enableSandbox: return "Turn Sandbox On"
         case .enableNetworking: return "Turn On Networking"
         case .repullImage: return "Re-pull Image"
-        case .openSettings: return "Open Settings"
         }
     }
 
     static func `for`(message: String) -> TerminalFailureFix? {
         if message.contains("predates ssh support") { return .repullImage }
-        if message.contains("Agent Sandbox is off") { return .openSettings }
+        if message.contains("Agent Sandbox is off") { return .enableSandbox }
         if message.contains("networking is off") { return .enableNetworking }
         if message.contains("server isn't running") { return .startServer }
         return nil

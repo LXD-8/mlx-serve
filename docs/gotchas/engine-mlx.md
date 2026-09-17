@@ -5102,3 +5102,24 @@ Fix: `rows_ok` requires `aux_state.ctx != null` (the loader refuses a head half 
 `writeSpecSidecar` drops the latch it raised (`mlx.dropLatchedErrorUnless`), the guard the restore dump
 already carried: a swallowed MLX error is not swallowed until the latch is cleared. Guard: the "arms no
 MLX latch" DiskTier test, which reproduced the exact `map.cpp:49` message before the fix.
+
+## A warm restore forwarded the 31-token tail as 30 + 1, so greedy bytes drifted from cold (2026-09-16)
+
+llmprobe's "streamed content is the same bytes as the non-streamed one" check failed on
+Flash Next at high effort: the second (streamed) request hit the hot cache and its JSON
+indentation differed. Two cold boots with the same flags were byte-identical, so the
+cache hit itself was the divergence. The cold prefill stops `SSM_SNAPSHOT_BACKOFF` (30)
+tokens early and forwards the last 31 rows in one span; the warm request restores at
+that snapshot, sees a 30-token prefix, `ssmSnapshotBackoff` returned 0 for it, and the
+tail ran as a 30-row chunk plus the 1-row logits forward. Different row counts read
+different kernel tilings: logprobs moved up to 0.6 nats on a 33-token prompt and greedy
+flipped at an exact bf16 tie.
+
+Fix: `ssmSnapshotBackoff(want, prefix_len, restored)` returns the whole prefix for a
+restored tail inside the window, so it forwards as the cold run's single span and takes
+no snapshot of its own (the restored checkpoint is the reachable one; the server's
+checkpoint bill already assumed this). Same prompt warm == cold logprobs exactly on
+Flash Next and Qwen3.5-0.8B; a turn appended past the snapshot still differs (cold
+would have forwarded the whole thing in one chunk), and a cache-off boot differs from a
+cache-on boot on cold prompts too (32 + 1 vs 2 + 31 rows). Guard:
+`tests/test_hybrid_reuse_equivalence.sh` (byte-identical warm vs cold).

@@ -1046,9 +1046,14 @@ pub const SSM_SNAPSHOT_BACKOFF: usize = 30;
 /// How many trailing prompt tokens the final (logits) forward covers: the
 /// held-back snapshot window plus the last token itself. Pure so the
 /// backoff/loop-bound interaction is unit-testable.
-pub fn ssmSnapshotBackoff(want_ssm_cp: bool, prefix_len: usize) usize {
+///
+/// A restored tail that fits the window (`restored`: the prefill resumes
+/// from a checkpoint) IS the cold run's final span, so it forwards as one
+/// span of the same rows: a 30 + 1 split reads different kernel tilings and
+/// greedy flips at a bf16 near-tie. No new snapshot: the restored one is it.
+pub fn ssmSnapshotBackoff(want_ssm_cp: bool, prefix_len: usize, restored: bool) usize {
     if (!want_ssm_cp) return 0;
-    if (prefix_len <= SSM_SNAPSHOT_BACKOFF) return 0;
+    if (prefix_len <= SSM_SNAPSHOT_BACKOFF) return if (restored) prefix_len else 0;
     return SSM_SNAPSHOT_BACKOFF;
 }
 
@@ -2475,7 +2480,7 @@ pub const Generator = struct {
 
         if (prompt_ids.len > 1) {
             const prefix_len = prompt_ids.len - 1;
-            const snapshot_backoff = ssmSnapshotBackoff(want_state_cp, prefix_len);
+            const snapshot_backoff = ssmSnapshotBackoff(want_state_cp, prefix_len, ssm_cp_offset > 0);
             const loop_end = prefix_len - snapshot_backoff;
             final_start = loop_end;
             // Vision prompts chunk like text (issue #197) — the splice offset
@@ -14699,15 +14704,20 @@ test "boundedPrefillChunk: composed-causal (kill switch) keeps the 2048 cap + sc
 test "ssmSnapshotBackoff: engages only under checkpointing and past the backoff length" {
     // No checkpointing (pure-attention archs, stride 0, vision): zero — the
     // final forward stays the classic 1-token logits pass.
-    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(false, 8192));
-    // Short prompts: nothing to back off (loop must keep >= 1 token).
-    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(true, SSM_SNAPSHOT_BACKOFF));
-    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(true, 1));
+    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(false, 8192, false));
+    // Short cold prompts: nothing to back off (loop must keep >= 1 token).
+    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(true, SSM_SNAPSHOT_BACKOFF, false));
+    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(true, 1, false));
+    // A restored tail inside the window is the cold path's final span: one forward of
+    // the same rows, no new snapshot (greedy bytes must match the cold run).
+    try testing.expectEqual(SSM_SNAPSHOT_BACKOFF, ssmSnapshotBackoff(true, SSM_SNAPSHOT_BACKOFF, true));
+    try testing.expectEqual(@as(usize, 1), ssmSnapshotBackoff(true, 1, true));
+    try testing.expectEqual(@as(usize, 0), ssmSnapshotBackoff(true, 0, true));
     // Checkpointing + long prompt: the always-on snapshot lands backoff
     // tokens before the prompt end, where the next turn's prefix match can
     // reach it (template generation-suffix divergence class).
-    try testing.expectEqual(SSM_SNAPSHOT_BACKOFF, ssmSnapshotBackoff(true, 8192));
-    try testing.expectEqual(SSM_SNAPSHOT_BACKOFF, ssmSnapshotBackoff(true, SSM_SNAPSHOT_BACKOFF + 1));
+    try testing.expectEqual(SSM_SNAPSHOT_BACKOFF, ssmSnapshotBackoff(true, 8192, false));
+    try testing.expectEqual(SSM_SNAPSHOT_BACKOFF, ssmSnapshotBackoff(true, SSM_SNAPSHOT_BACKOFF + 1, true));
     // The tail forward must stay UNDER the prefill-eval-cadence threshold
     // (seq >= 32 turns it into a "prefill" costing ~450ms of eval bubbles):
     // tail = backoff + 1 <= 31.

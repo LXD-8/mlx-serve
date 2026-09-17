@@ -6,8 +6,8 @@ import XCTest
 /// the full chat-capable registry (LAN @peer entries included).
 ///
 /// pi is special: its models.json list is static, but pi ships a first-class
-/// extension API (`pi.registerProvider`, verified in 0.80.10 — the pinned
-/// sandbox version). We write an extension that fetches the server's live
+/// extension API (`pi.registerProvider`, verified in 0.80.10).
+/// We write an extension that fetches the server's live
 /// `/v1/models` at session start, so pi's picker tracks reality (LAN peers
 /// come and go) instead of a launch-time snapshot. opencode and hermes have
 /// no such hook — they get the snapshot baked into their configs.

@@ -1790,10 +1790,9 @@ pub const HotPrefixCache = struct {
         // is answered twice (an MTP arm then a serial arm, two clients, a
         // retry): the two entries agree on the whole prompt and diverge in
         // their generated tails, so neither is a prefix of the other. The
-        // second entry then holds only its own tail prefill's snapshot — which
-        // for a ~31-token tail lands AT the prompt end, past any later match
-        // (`ssmSnapshotBackoff` is 0 below 31 tokens). Evict the first and the
-        // prompt becomes uncacheable.
+        // second entry then holds no snapshot of its own: a restored ~31-token
+        // tail forwards as one span (`ssmSnapshotBackoff`). Evict the first and
+        // the prompt becomes uncacheable.
         //
         // Inherit by refcount-SHARE, never copy: the buffers are already
         // resident, so this costs GPU memory only in the accounting, and only
@@ -2456,9 +2455,8 @@ pub const HotPrefixCache = struct {
     /// arm; two clients; any retry) commits two entries that agree on the
     /// whole prompt and diverge in their GENERATED tails, so neither replaces
     /// the other — and the second one, having restored ~everything and
-    /// prefilled a ~31-token tail, earns no reachable checkpoint of its own
-    /// (`ssmSnapshotBackoff` is 0 below 31 tokens, so its sole snapshot lands
-    /// AT the prompt end, past any later match). Evict the first and the
+    /// prefilled a ~31-token tail, earns no checkpoint of its own (a restored
+    /// tail inside the window forwards as one span, `ssmSnapshotBackoff`). Evict the first and the
     /// prompt is uncacheable: 393k tokens, 560 s of cold prefill, every rung.
     fn bestCheckpointDonor(
         self: *const HotPrefixCache,
@@ -5209,9 +5207,8 @@ test "HotPrefixCache: a commit from a restored prefix inherits the donor's check
     // tail and commits its OWN entry B. B's tokens are NOT a prefix-extension
     // of A's (the two arms generate different tails), so the replace path —
     // the only checkpoint inheritance there was — never runs, and B's own
-    // prefill was too short to earn a reachable checkpoint (a <= 30-token
-    // tail takes `ssmSnapshotBackoff` 0, so its sole snapshot lands AT the
-    // prompt end, past any later match). Once the byte budget evicted A, the
+    // prefill was too short to earn a checkpoint (a restored tail inside the
+    // window forwards as one span, `ssmSnapshotBackoff`). Once the byte budget evicted A, the
     // next rung found only B, every candidate `continue`d in
     // findBestRestorableMatch, and a 393k-token prompt cold-prefilled for
     // 560 s with no `[hot-cache]` line at all.

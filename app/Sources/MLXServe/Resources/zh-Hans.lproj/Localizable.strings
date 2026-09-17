@@ -971,6 +971,7 @@
 "Turbo needs a %@ MB adapter this pack predates — it downloads once, and Generate waits for it." = "Turbo 需要 %@ MB 的适配器，而这个包早于该适配器 —— 只需下载一次，生成会等它完成。";
 "Turbo runs on the Mac hosting this model; it needs the adapter in ITS copy of the pack." = "Turbo 在托管此模型的 Mac 上运行；它需要在该 Mac 自己那份包副本中提供适配器。";
 "Turn On Networking" = "开启联网";
+"Turn Sandbox On" = "开启沙盒";
 "Typical (faster, lossy)" = "典型（更快，有损）";
 "URL must start with http:// or https://" = "URL 必须以 http:// 或 https:// 开头";
 "Unknown" = "未知";

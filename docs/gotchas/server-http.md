@@ -2132,10 +2132,15 @@ was `\n`, the grammar accepted free whitespace without bound, and thirty of them
 tripped the exact-cycle loop guard: `finish_reason "length"`, empty content, valid
 JSON never produced. Cold requests were fine, and main and PR #407 behaved the same.
 
-Fix: `json_grammar` counts consecutive free-whitespace bytes (`ws_run`, carried by
-snapshots) and rejects past `MAX_FREE_WS` (16) between tokens and after the root, so
-the mask forces the next structural byte. Content is never constrained by it, only
-formatting. Guard: `free whitespace is capped so a masked model cannot idle forever`.
+Fix: the grammar admits no whitespace outside the root value (before or after it) and
+keeps the capped free whitespace inside it, so the mask forces `{` at once and the
+model's own layout stays. llmprobe (2026-09-16) had caught Flash Next at high effort
+answering `\r   \r   \r  {` with 2-space indentation streamed and 6-space non-streamed;
+the cause was the warm-restore prefill split (engine-mlx.md, same date), and a fully
+compact grammar shipped first as the symptom fix. Compact cost quality: on a 0.8B the
+forced `:"` boundary decoded the rare name `Olu` as `Ohu` in 4 of 30 extraction records
+(30/30 with its own layout, Flash Next 30/30 either way), so only the outside is
+compact. Guard: `grammar admits free whitespace inside the root value only`.
 
 ## ds4 sessions were per request; embeddings segfaulted on an engine-backed model (2026-09-14)
 
