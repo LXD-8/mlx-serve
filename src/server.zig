@@ -7050,14 +7050,38 @@ const PropsSettings = struct {
     prefix_cache_disk_bytes: u64,
 };
 
+const PropsEngine = enum { mlx, llama, ds4 };
+
+/// ds4 and llama.cpp bypass generate.zig: MLX decode levers, PLD and the MLX drafters never run there.
+fn embeddedEngineSettings(st: PropsSettings, engine: PropsEngine, engine_mtp: bool) PropsSettings {
+    if (engine == .mlx) return st;
+    var out = st;
+    out.engine = @tagName(engine);
+    if (engine == .ds4) out.kv_quant = "off";
+    out.decode_attn_quant = false;
+    out.prefill_chunk = 0;
+    out.mtp_loaded = engine_mtp;
+    out.mtp_default_on = engine_mtp;
+    out.mtp_adaptive = false;
+    out.drafter = "none";
+    out.pld = PldDefaults.off;
+    return out;
+}
+
 fn propsSettingsFor(lm: *LoadedModel) PropsSettings {
+    const engine: PropsEngine = if (lm.ds4_engine != null) .ds4 else if (lm.llama_engine != null) .llama else .mlx;
+    const engine_mtp = if (lm.ds4_engine) |e| e.mtpDraftTokens() > 1 else false;
+    return embeddedEngineSettings(mlxPropsSettings(lm), engine, engine_mtp);
+}
+
+fn mlxPropsSettings(lm: *LoadedModel) PropsSettings {
     const config = lm.config.?;
     const kv = configuredKvQuantFor(config);
     return .{
-        .engine = if (lm.ds4_engine != null) "ds4" else if (lm.llama_engine != null) "llama" else "mlx",
+        .engine = "mlx",
         .kv_quant = if (lm.llama_engine != null) @tagName(llama_kv_quant) else if (kv.isQuant()) (if (kv.bits == 4) "4" else "8") else "off",
         .kv_attn_mode = server_config.kv_attn_mode,
-        .decode_attn_quant = transformer_mod.decodeAttnQuantEnabled(),
+        .decode_attn_quant = transformer_mod.decodeAttnQuantEnabled() and (if (lm.transformer) |x| x.dense_attn_proj else false),
         .prefill_chunk = generate_mod.prefill_chunk_override,
         .mtp_loaded = mtpCapable(lm),
         .mtp_default_on = defaultEnableMtp(lm.mtp != null, config.isMoe(), forceMtpFor(config), dsv4DraftStages(lm), nativeMeasuredMoeHead(lm)),
@@ -20537,6 +20561,25 @@ test "settingsPropsJson: /props names the effective serving settings a benchmark
     var ep = try std.json.parseFromSlice(std.json.Value, testing.allocator, exact[",\"settings\":".len..], .{});
     defer ep.deinit();
     try testing.expect(ep.value.object.get("mtp").?.object.get("acceptance_param").? == .null);
+}
+
+test "embeddedEngineSettings: an engine-backed model reports only the levers its engine runs" {
+    const base: PropsSettings = .{ .engine = "mlx", .kv_quant = "8", .kv_attn_mode = .auto, .decode_attn_quant = true, .prefill_chunk = 8192, .mtp_loaded = false, .mtp_default_on = false, .mtp_acceptance = .exact, .mtp_depth = 0, .mtp_adaptive = true, .max_mtp_ctx = 0, .drafter = "assistant", .pld = .{ .enable = true, .draft_len = 5, .key_len = 3 }, .max_concurrent = 4, .prefix_cache_mem_bytes = 2048, .prefix_cache_disk_bytes = 0 };
+
+    const ds4 = embeddedEngineSettings(base, .ds4, true);
+    try testing.expectEqualStrings("ds4", ds4.engine);
+    try testing.expectEqualStrings("off", ds4.kv_quant);
+    try testing.expect(!ds4.decode_attn_quant and !ds4.pld.enable and !ds4.mtp_adaptive);
+    try testing.expect(ds4.mtp_loaded and ds4.mtp_default_on);
+    try testing.expectEqualStrings("none", ds4.drafter);
+    try testing.expectEqual(@as(usize, 0), ds4.prefill_chunk);
+
+    const llama = embeddedEngineSettings(base, .llama, false);
+    try testing.expectEqualStrings("llama", llama.engine);
+    try testing.expectEqualStrings("8", llama.kv_quant);
+    try testing.expect(!llama.decode_attn_quant and !llama.pld.enable and !llama.mtp_default_on);
+
+    try testing.expect(embeddedEngineSettings(base, .mlx, false).decode_attn_quant);
 }
 
 test "ngramWarmPropsJson: /props names how far the qwen4 ngram warm has got" {

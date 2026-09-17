@@ -14534,6 +14534,8 @@ pub const Transformer = struct {
     /// lazily on the first [1,1,·] decode dispatch; prefill and every
     /// multi-token forward keep the authoritative dense weight.
     attn_dq: std.AutoHashMapUnmanaged(usize, ?AttnDqCopy) = .empty,
+    /// `weightsHaveDenseAttnProj` at load: false = decode-attn-quant never engages.
+    dense_attn_proj: bool = false,
     /// Reserved-token suppression mask (`[vocab]` bool, true = never
     /// sample), built once at load by `server`'s install step from the
     /// tokenizer's `special: true` set minus template-emitted markers and
@@ -15365,6 +15367,7 @@ pub const Transformer = struct {
             .cache = cache,
             .s = s,
             .allocator = allocator,
+            .dense_attn_proj = attnProjRouted(&config, moe_layers != null or qwen4_state != null) and weightsHaveDenseAttnProj(weights),
             .emb_w = emb_w,
             .emb_s = emb_s_arr,
             .emb_b = emb_b_arr,
@@ -32560,6 +32563,30 @@ pub fn decodeAttnQuantEnabled() bool {
     return enabled;
 }
 
+/// `attnProj` is reached only from the MoE/qwen4 forward, and not by its MLA or Gemma 4 arms.
+fn attnProjRouted(config: *const ModelConfig, moe_forward: bool) bool {
+    return moe_forward and !config.isMla() and !config.isGemma4Layers();
+}
+
+/// Whether `--decode-attn-quant` has anything to requantize: a text-trunk attention
+/// projection shipped dense. Fully quantized packs decode exactly as without it.
+pub fn weightsHaveDenseAttnProj(weights: *const Weights) bool {
+    const projs = [_][]const u8{ ".q_proj.weight", ".k_proj.weight", ".v_proj.weight", ".o_proj.weight", ".q_k_v_proj.weight", ".wq_du.weight", ".wk_dv.weight", ".wv_dv.weight", ".wo_ud.weight", ".wr_du.weight" };
+    var it = weights.map.iterator();
+    while (it.next()) |e| {
+        const name = e.key_ptr.*;
+        if (std.mem.indexOf(u8, name, "attn") == null) continue;
+        if (std.mem.indexOf(u8, name, "vision") != null or std.mem.indexOf(u8, name, "visual") != null or std.mem.indexOf(u8, name, "audio") != null) continue;
+        for (projs) |suffix| {
+            if (!std.mem.endsWith(u8, name, suffix)) continue;
+            var buf: [512]u8 = undefined;
+            const scales = std.fmt.bufPrint(&buf, "{s}.scales", .{name[0 .. name.len - ".weight".len]}) catch break;
+            if (decodeAttnQuantEligible(mlx.getShape(e.value_ptr.*), mlx.mlx_array_dtype(e.value_ptr.*), weights.map.contains(scales))) return true;
+        }
+    }
+    return false;
+}
+
 /// Whether a loaded dense projection weight (pre-transposed [in, out]) can
 /// carry an INT8-g32 side copy. The conditions are the quantized dispatch's
 /// own: dense, a float dtype the requant helps, 2-D, in-dim in whole groups.
@@ -42300,7 +42327,6 @@ test "fused gate+up+SwiGLU expert kernel is bit-identical to the split gatherQmv
     const N: c_int = 64;
     const K: c_int = 256;
     const TOPK: c_int = 3;
-    const wcnt: usize = @intCast(E * N * K);
 
     for ([_]struct { nvfp4: bool, bits: u32, gs: u32 }{
         .{ .nvfp4 = false, .bits = 4, .gs = 64 },
@@ -42322,15 +42348,8 @@ test "fused gate+up+SwiGLU expert kernel is bit-identical to the split gatherQmv
             if (b.bi.ctx != null) _ = mlx.mlx_array_free(b.bi);
         };
         for (0..2) |bi_idx| {
-            const wbuf = try allocator.alloc(f32, wcnt);
-            defer allocator.free(wbuf);
-            for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-            const wsh = [_]c_int{ E, N, K };
-            const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wsh, 3, .float32);
-            defer _ = mlx.mlx_array_free(w32);
-            var wb = mlx.mlx_array_new();
+            const wb = try testRandWeightBf16(rnd, &[_]c_int{ E, N, K }, s);
             defer _ = mlx.mlx_array_free(wb);
-            try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
             var triple = mlx.mlx_vector_array_new();
             defer _ = mlx.mlx_vector_array_free(triple);
             try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(@intCast(gs)), mlx.mlx_optional_int.some(@intCast(bits)), if (nvfp4) "nvfp4" else "affine", .{}, s));
@@ -42390,28 +42409,15 @@ test "fused gate+up+SwiGLU expert kernel is bit-identical to the split gatherQmv
 fn moeRowsAffineBank(s: mlx.mlx_stream, rnd: std.Random, E: c_int, N: c_int, K: c_int, bits: u32, gs: u32) !struct { w: mlx.mlx_array, sc: mlx.mlx_array, bi: mlx.mlx_array } {
     const words: c_int = @intCast(@divExact(@as(u32, @intCast(K)) * bits, 32));
     const groups: c_int = @divExact(K, @as(c_int, @intCast(gs)));
-    const wn: usize = @intCast(E * N * words);
-    const wdata = try std.testing.allocator.alloc(u32, wn);
-    defer std.testing.allocator.free(wdata);
-    for (wdata) |*v| v.* = rnd.int(u32);
+    var key = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(key);
+    try mlx.check(mlx.mlx_random_key(&key, rnd.int(u64)));
     const w_shape = [_]c_int{ E, N, words };
-    const w = mlx.mlx_array_new_data(wdata.ptr, &w_shape, 3, .uint32);
-    const sn: usize = @intCast(E * N * groups);
+    var w = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_random_bits(&w, &w_shape, 3, 4, key, s));
     const s_shape = [_]c_int{ E, N, groups };
-    const sf = try std.testing.allocator.alloc(f32, sn);
-    defer std.testing.allocator.free(sf);
-    for (sf) |*v| v.* = 0.01 + 0.05 * rnd.float(f32);
-    const bf = try std.testing.allocator.alloc(f32, sn);
-    defer std.testing.allocator.free(bf);
-    for (bf) |*v| v.* = rnd.float(f32) - 0.5;
-    const sc32 = mlx.mlx_array_new_data(sf.ptr, &s_shape, 3, .float32);
-    defer _ = mlx.mlx_array_free(sc32);
-    const bi32 = mlx.mlx_array_new_data(bf.ptr, &s_shape, 3, .float32);
-    defer _ = mlx.mlx_array_free(bi32);
-    var sc = mlx.mlx_array_new();
-    try mlx.check(mlx.mlx_astype(&sc, sc32, .bfloat16, s));
-    var bi = mlx.mlx_array_new();
-    try mlx.check(mlx.mlx_astype(&bi, bi32, .bfloat16, s));
+    const sc = try testRandUniformBf16(rnd, &s_shape, 0.01, 0.06, s);
+    const bi = try testRandUniformBf16(rnd, &s_shape, -0.5, 0.5, s);
     return .{ .w = w, .sc = sc, .bi = bi };
 }
 
@@ -43094,7 +43100,7 @@ test "msv_qmv_rows is mlx_equal per row to stock M=1 qmv at every head shape" {
         for (shapes) |kn| {
             const K = kn[0];
             const Nout = kn[1];
-            const w_bf = try attn256RandBf16(rnd, &[_]c_int{ Nout, K }, s);
+            const w_bf = try testRandWeightBf16(rnd, &[_]c_int{ Nout, K }, s);
             defer _ = mlx.mlx_array_free(w_bf);
             var qvec = mlx.mlx_vector_array_new();
             defer _ = mlx.mlx_vector_array_free(qvec);
@@ -43940,16 +43946,8 @@ test "gatherQmv is no worse than stock gather_qmm vs fp32 dequant ground truth" 
         for ([_]mlx.mlx_dtype{ .bfloat16, .float32 }) |xdt| {
             for ([_]bool{ false, true }) |x_per_expert| {
                 // ── quantized bank [E,N,K] ──
-                const wcnt: usize = @intCast(E * N * K);
-                const wbuf = try allocator.alloc(f32, wcnt);
-                defer allocator.free(wbuf);
-                for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-                const wsh = [_]c_int{ E, N, K };
-                const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wsh, 3, .float32);
-                defer _ = mlx.mlx_array_free(w32);
-                var wb = mlx.mlx_array_new();
+                const wb = try testRandWeightBf16(rnd, &[_]c_int{ E, N, K }, s);
                 defer _ = mlx.mlx_array_free(wb);
-                try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
                 var triple = mlx.mlx_vector_array_new();
                 defer _ = mlx.mlx_vector_array_free(triple);
                 try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(@intCast(cfg.gs)), mlx.mlx_optional_int.some(@intCast(cfg.bits)), "affine", .{}, s));
@@ -44081,16 +44079,8 @@ test "gatherQmv nvfp4 is no worse than stock gather_qmm vs fp32 dequant ground t
     for ([_]mlx.mlx_dtype{ .bfloat16, .float32 }) |xdt| {
         for ([_]bool{ false, true }) |x_per_expert| {
             // ── nvfp4 bank [E,N,K] ──
-            const wcnt: usize = @intCast(E * N * K);
-            const wbuf = try allocator.alloc(f32, wcnt);
-            defer allocator.free(wbuf);
-            for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-            const wsh = [_]c_int{ E, N, K };
-            const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wsh, 3, .float32);
-            defer _ = mlx.mlx_array_free(w32);
-            var wb = mlx.mlx_array_new();
+            const wb = try testRandWeightBf16(rnd, &[_]c_int{ E, N, K }, s);
             defer _ = mlx.mlx_array_free(wb);
-            try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
             var pair = mlx.mlx_vector_array_new();
             defer _ = mlx.mlx_vector_array_free(pair);
             try mlx.check(mlx.mlx_quantize(&pair, wb, mlx.mlx_optional_int.some(16), mlx.mlx_optional_int.some(4), "nvfp4", .{}, s));
@@ -46754,16 +46744,8 @@ test "verifyQmm: the plain-SIMD tiles match stock qmm at 5/6/8-bit affine too" {
     };
     for ([_]u32{ 5, 6, 8 }) |bits| {
         for (cases) |cs| {
-            const wn: usize = @intCast(cs.n * cs.k);
-            const wbuf = try allocator.alloc(f32, wn);
-            defer allocator.free(wbuf);
-            for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-            const wshape = [_]c_int{ cs.n, cs.k };
-            const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-            defer _ = mlx.mlx_array_free(w32);
-            var wb = mlx.mlx_array_new();
+            const wb = try testRandWeightBf16(rnd, &[_]c_int{ cs.n, cs.k }, s);
             defer _ = mlx.mlx_array_free(wb);
-            try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
 
             var triple = mlx.mlx_vector_array_new();
             defer _ = mlx.mlx_vector_array_free(triple);
@@ -46895,16 +46877,8 @@ test "verifyQmm: split-K + msg + NAX verify-width kernels match stock qmm (4-bit
     };
     for (cases) |cs| {
         // Random dense weight → 4-bit affine triple.
-        const wn: usize = @intCast(cs.n * cs.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        defer allocator.free(wbuf);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ cs.n, cs.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ cs.n, cs.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(@intCast(cs.gs)), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -47022,16 +46996,8 @@ test "verifyQmm: split-K + msg + NAX verify-width kernels match stock qmm (4-bit
         const n: c_int = 5120;
         const gs: u32 = 64;
         for ([_]u32{ 5, 6, 8 }) |bits| {
-            const wn: usize = @intCast(n * k);
-            const wbuf = try allocator.alloc(f32, wn);
-            defer allocator.free(wbuf);
-            for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-            const wshape = [_]c_int{ n, k };
-            const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-            defer _ = mlx.mlx_array_free(w32);
-            var wb = mlx.mlx_array_new();
+            const wb = try testRandWeightBf16(rnd, &[_]c_int{ n, k }, s);
             defer _ = mlx.mlx_array_free(wb);
-            try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
 
             var triple = mlx.mlx_vector_array_new();
             defer _ = mlx.mlx_vector_array_free(triple);
@@ -47135,16 +47101,8 @@ test "verifyQmm: split-K + msg + NAX verify-width kernels match stock qmm (4-bit
     {
         const mk: c_int = 2048;
         const mn: c_int = 1000;
-        const wn: usize = @intCast(mn * mk);
-        const wbuf = try allocator.alloc(f32, wn);
-        defer allocator.free(wbuf);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ mn, mk };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ mn, mk }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -47265,16 +47223,8 @@ test "verifyQmm: crossrow M 8/9 lane matches stock qmm (4-bit g64, opt-in)" {
         .{ .k = 1536, .n = 17408 }, // MLP-width class, K = 3 x 512
     };
     for (cases) |cs| {
-        const wn: usize = @intCast(cs.n * cs.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        defer allocator.free(wbuf);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ cs.n, cs.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ cs.n, cs.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -47778,16 +47728,8 @@ test "NAX host scaffolding: zero-pad to 16 rows + slice-back are exact (runs off
     const N: c_int = 640; // % 32 == 0, NAX-shaped
     const gs: u32 = 64;
 
-    const wn: usize = @intCast(N * K);
-    const wbuf = try allocator.alloc(f32, wn);
-    defer allocator.free(wbuf);
-    for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-    const wshape = [_]c_int{ N, K };
-    const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-    defer _ = mlx.mlx_array_free(w32);
-    var wb = mlx.mlx_array_new();
+    const wb = try testRandWeightBf16(rnd, &[_]c_int{ N, K }, s);
     defer _ = mlx.mlx_array_free(wb);
-    try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
     var triple = mlx.mlx_vector_array_new();
     defer _ = mlx.mlx_vector_array_free(triple);
     try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(@intCast(gs)), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -48676,16 +48618,8 @@ test "spec-verify width sweep µbench (MLX_SERVE_VERIFY_WIDTH_UBENCH=1)" {
 
     std.debug.print("\n[vw-ubench] {s:>8} {s:>3} {s:>10} {s:>9}\n", .{ "shape", "M", "ms", "vs_M1" });
     for (shapes) |sh| {
-        const wn: usize = @intCast(sh.n * sh.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ sh.n, sh.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        allocator.free(wbuf);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ sh.n, sh.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -48785,16 +48719,8 @@ test "verifyQmm µbench: kernel vs stock per 27B shape (MLX_SERVE_VQMM_UBENCH=1)
 
     std.debug.print("\n[vqmm-ubench] {s:>8} {s:>3} {s:>10} {s:>10} {s:>8} {s:>10}\n", .{ "shape", "M", "stock_ms", "kernel_ms", "ratio", "kern_TF/s" });
     for (shapes) |sh| {
-        const wn: usize = @intCast(sh.n * sh.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ sh.n, sh.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        allocator.free(wbuf);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ sh.n, sh.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(4), "affine", .{}, s));
@@ -48925,16 +48851,8 @@ test "verifyQmm mixed-width NAX µbench (MLX_SERVE_VQMM_MIXED_UBENCH=1)" {
         "shape", "bits", "stock_ms", "nax_ms", "ratio",
     });
     for (shapes) |sh| {
-        const wn: usize = @intCast(sh.n * sh.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ sh.n, sh.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        allocator.free(wbuf);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ sh.n, sh.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(
@@ -49079,16 +48997,8 @@ test "prefill qmm µbench: stock qmm vs dequant+GEMM at 27B prefill shapes (MLX_
     };
     std.debug.print("\n[pqmm-ubench] {s:>10} {s:>5} {s:>9} {s:>12} {s:>12}\n", .{ "shape", "M", "stock_ms", "dq+gemm_ms", "gemm_ms" });
     for (shapes) |sh| {
-        const wn: usize = @intCast(sh.n * sh.k);
-        const wbuf = try allocator.alloc(f32, wn);
-        for (wbuf) |*v| v.* = rnd.float(f32) - 0.5;
-        const wshape = [_]c_int{ sh.n, sh.k };
-        const w32 = mlx.mlx_array_new_data(wbuf.ptr, &wshape, 2, .float32);
-        allocator.free(wbuf);
-        defer _ = mlx.mlx_array_free(w32);
-        var wb = mlx.mlx_array_new();
+        const wb = try testRandWeightBf16(rnd, &[_]c_int{ sh.n, sh.k }, s);
         defer _ = mlx.mlx_array_free(wb);
-        try mlx.check(mlx.mlx_astype(&wb, w32, .bfloat16, s));
         var triple = mlx.mlx_vector_array_new();
         defer _ = mlx.mlx_vector_array_free(triple);
         try mlx.check(mlx.mlx_quantize(&triple, wb, mlx.mlx_optional_int.some(64), mlx.mlx_optional_int.some(sh.bits), "affine", .{}, s));
@@ -49455,6 +49365,28 @@ fn attn256RandBf16(rnd: std.Random, shape: []const c_int, s: mlx.mlx_stream) !ml
     var out = mlx.mlx_array_new();
     try mlx.check(mlx.mlx_astype(&out, f32arr, .bfloat16, s));
     return out;
+}
+
+/// Uniform [lo, hi) drawn by MLX: a host fill of a vocab-sized weight in a
+/// Debug test build dominated the whole suite's runtime.
+fn testRandUniformBf16(rnd: std.Random, shape: []const c_int, lo: f32, hi: f32, s: mlx.mlx_stream) !mlx.mlx_array {
+    var key = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(key);
+    try mlx.check(mlx.mlx_random_key(&key, rnd.int(u64)));
+    const lo_a = mlx.mlx_array_new_float(lo);
+    defer _ = mlx.mlx_array_free(lo_a);
+    const hi_a = mlx.mlx_array_new_float(hi);
+    defer _ = mlx.mlx_array_free(hi_a);
+    var u = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(u);
+    try mlx.check(mlx.mlx_random_uniform(&u, lo_a, hi_a, shape.ptr, shape.len, .float32, key, s));
+    var out = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_astype(&out, u, .bfloat16, s));
+    return out;
+}
+
+fn testRandWeightBf16(rnd: std.Random, shape: []const c_int, s: mlx.mlx_stream) !mlx.mlx_array {
+    return testRandUniformBf16(rnd, shape, -0.5, 0.5, s);
 }
 
 fn attn256RandBf16Scaled(rnd: std.Random, shape: []const c_int, scale: f32, s: mlx.mlx_stream) !mlx.mlx_array {
@@ -50443,9 +50375,9 @@ test "qsa decode gather: subset SDPA matches masked full SDPA at decode width" {
     const kv_shape = [_]c_int{ 1, 2, kL, 64 };
     const q = try attn256RandBf16(rnd, &q_shape, s);
     defer _ = mlx.mlx_array_free(q);
-    const k_dense = try attn256RandBf16(rnd, &kv_shape, s);
+    const k_dense = try testRandWeightBf16(rnd, &kv_shape, s);
     defer _ = mlx.mlx_array_free(k_dense);
-    const v_dense = try attn256RandBf16(rnd, &kv_shape, s);
+    const v_dense = try testRandWeightBf16(rnd, &kv_shape, s);
     defer _ = mlx.mlx_array_free(v_dense);
     var fx = try QsaBlockFixture.build(rnd, 1, kL, kb, ratio);
     defer fx.deinit();
@@ -51124,9 +51056,9 @@ test "qsa verify gather: subset SDPA matches masked full SDPA at verify widths (
         const kv_shape = [_]c_int{ 1, 2, c.kv, 256 };
         const q = try attn256RandBf16(rnd, &q_shape, s);
         defer _ = mlx.mlx_array_free(q);
-        const k_dense = try attn256RandBf16(rnd, &kv_shape, s);
+        const k_dense = try testRandWeightBf16(rnd, &kv_shape, s);
         defer _ = mlx.mlx_array_free(k_dense);
-        const v_dense = try attn256RandBf16(rnd, &kv_shape, s);
+        const v_dense = try testRandWeightBf16(rnd, &kv_shape, s);
         defer _ = mlx.mlx_array_free(v_dense);
 
         const blocks_host = try qsaVerifyBlocksHost(std.testing.allocator, rnd, c.s, c.kv, c.kb, ratio);
@@ -51258,9 +51190,9 @@ test "qsa sparse attn: one fused dispatch equals the union gather at verify widt
         const kv_shape = [_]c_int{ 1, c.hkv, c.kv, 256 };
         const q = try attn256RandBf16(rnd, &q_shape, s);
         defer _ = mlx.mlx_array_free(q);
-        const k_dense = try attn256RandBf16(rnd, &kv_shape, s);
+        const k_dense = try testRandWeightBf16(rnd, &kv_shape, s);
         defer _ = mlx.mlx_array_free(k_dense);
-        const v_dense = try attn256RandBf16(rnd, &kv_shape, s);
+        const v_dense = try testRandWeightBf16(rnd, &kv_shape, s);
         defer _ = mlx.mlx_array_free(v_dense);
 
         const blocks_host = try qsaVerifyBlocksHost(ta, rnd, c.s, c.kv, c.kb, ratio);
@@ -61326,4 +61258,39 @@ test "hc prefill: incompatible read writes immediately" {
             try testing.expectEqual(@as(f32, 0), try attn256MaxDiff(h, expected, s));
         }
     }
+}
+
+test "weightsHaveDenseAttnProj: decode-attn-quant applies only to a dense text attention projection" {
+    const allocator = std.testing.allocator;
+    const s = mlx.gpuStream();
+    const put = struct {
+        fn add(w: *Weights, name: []const u8, dtype: mlx.mlx_dtype, st: mlx.mlx_stream) !void {
+            const shape = [_]c_int{ 64, 64 };
+            var arr = mlx.mlx_array_new();
+            try mlx.check(mlx.mlx_zeros(&arr, &shape, 2, dtype, st));
+            try w.map.put(try w.allocator.dupe(u8, name), arr);
+        }
+    }.add;
+
+    var quantized = Weights.init(allocator);
+    defer quantized.deinit();
+    try put(&quantized, "model.layers.0.self_attn.q_proj.weight", .uint32, s);
+    try put(&quantized, "model.layers.0.self_attn.q_proj.scales", .bfloat16, s);
+    try put(&quantized, "vision_tower.layers.0.self_attn.q_proj.weight", .bfloat16, s);
+    try std.testing.expect(!weightsHaveDenseAttnProj(&quantized));
+
+    var dense = Weights.init(allocator);
+    defer dense.deinit();
+    try put(&dense, "model.layers.3.self_attn.o_proj.weight", .bfloat16, s);
+    try std.testing.expect(weightsHaveDenseAttnProj(&dense));
+
+    try std.testing.expect(attnProjRouted(&.{ .model_type = "laguna" }, true));
+    try std.testing.expect(!attnProjRouted(&.{ .model_type = "llama" }, false));
+    try std.testing.expect(!attnProjRouted(&.{ .model_type = "gemma4" }, true));
+    try std.testing.expect(!attnProjRouted(&.{ .model_type = "bailing_hybrid", .mla_kv_lora_rank = 512 }, true));
+
+    var inkling = Weights.init(allocator);
+    defer inkling.deinit();
+    try put(&inkling, "model.layers.0.attn.wo_ud.weight", .bfloat16, s);
+    try std.testing.expect(weightsHaveDenseAttnProj(&inkling));
 }
