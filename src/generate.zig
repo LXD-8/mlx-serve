@@ -6078,10 +6078,8 @@ pub const Generator = struct {
         const mi: c_int = @intCast(m);
         const strides2 = [_]c_int{ 1, 1 };
 
-        var p2d = mlx.mlx_array_new();
+        const p2d = try verifyRows2d(probs_all, m, s);
         defer _ = mlx.mlx_array_free(p2d);
-        const p2_shape = [_]c_int{ mi + 1, vocab };
-        try mlx.check(mlx.mlx_reshape(&p2d, probs_all, &p2_shape, 2, s));
 
         var ids_2d = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(ids_2d);
@@ -6236,10 +6234,8 @@ pub const Generator = struct {
         const mi: c_int = @intCast(m);
         const strides2 = [_]c_int{ 1, 1 };
 
-        var p2d = mlx.mlx_array_new();
+        const p2d = try verifyRows2d(probs_all, m, s);
         defer _ = mlx.mlx_array_free(p2d);
-        const p2_shape = [_]c_int{ mi + 1, vocab };
-        try mlx.check(mlx.mlx_reshape(&p2d, probs_all, &p2_shape, 2, s));
 
         var ids_2d = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(ids_2d);
@@ -7417,7 +7413,11 @@ pub const Generator = struct {
             st.accept_defer = .{ .ctx = null };
             st.corr = .{ .ctx = null };
         } else if (stochastic and mtpBatchCorrEnabled()) {
-            const probs_all = try probsAllPositions(verify_logits, self.sampling, s);
+            // A group-padded row filters only the 1+m positions it reads.
+            var live_logits = mlx.mlx_array_new();
+            defer _ = mlx.mlx_array_free(live_logits);
+            try mlx.check(mlx.mlx_slice(&live_logits, verify_logits, &.{ 0, 0, 0 }, 3, &.{ vl_shape[0], @intCast(1 + m), vl_shape[2] }, 3, &.{ 1, 1, 1 }, 3, s));
+            const probs_all = try probsAllPositions(live_logits, self.sampling, s);
             defer _ = mlx.mlx_array_free(probs_all);
             const bg = try self.mtp_accept_graph(
                 probs_all,
@@ -10863,6 +10863,21 @@ fn probsAllPositions(logits_3d: mlx.mlx_array, sampling: SamplingParams, s: mlx.
 /// `probsAllPositions` of that row alone.
 fn groupProbsBlock(block_logits: mlx.mlx_array, sampling: SamplingParams, s: mlx.mlx_stream) !mlx.mlx_array {
     return probsAllPositions(block_logits, sampling, s);
+}
+
+/// The `[1+m, V]` rows a round reads from its verify block: a batched group
+/// right-pads every row to its widest draft, so the block may be longer.
+fn verifyRows2d(probs_all: mlx.mlx_array, m: u32, s: mlx.mlx_stream) !mlx.mlx_array {
+    const shape = mlx.getShape(probs_all);
+    const rows: c_int = @intCast(1 + m);
+    if (shape.len != 3 or shape[0] != 1 or shape[1] < rows) return error.MtpVerifyBlockShape;
+    var head = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(head);
+    try mlx.check(mlx.mlx_slice(&head, probs_all, &.{ 0, 0, 0 }, 3, &.{ 1, rows, shape[2] }, 3, &.{ 1, 1, 1 }, 3, s));
+    var out = mlx.mlx_array_new();
+    errdefer _ = mlx.mlx_array_free(out);
+    try mlx.check(mlx.mlx_reshape(&out, head, &.{ rows, shape[2] }, 2, s));
+    return out;
 }
 
 /// One row's `[1, 1+m, V]` densities as a VIEW into the group's block.
@@ -16212,6 +16227,31 @@ test "batched corrections: point-mass residuals sample deterministically, accept
     const aq = mlx.mlx_array_data_float32(gs.accept_q) orelse return error.InvalidDtype;
     try testing.expectApproxEqAbs(@as(f32, 1.0), aq[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 1.0), aq[1], 1e-6);
+}
+
+test "batched corrections read only 1+m rows of a group-padded verify block" {
+    const s = mlx.gpuStream();
+    // The block above plus one pad row, m=2.
+    const p_data = [_]f32{ 0.5, 0.5, 0, 0, 0, 0.25, 0.75, 0, 0, 0, 0, 1.0, 1.0, 0, 0, 0 };
+    const p_shape = [_]c_int{ 1, 4, 4 };
+    const probs_all = mlx.mlx_array_new_data(&p_data, &p_shape, 3, .float32);
+    defer _ = mlx.mlx_array_free(probs_all);
+    const id_shape = [_]c_int{1};
+    const d0_data: i32 = 0;
+    const d1_data: i32 = 2;
+    const d0 = mlx.mlx_array_new_data(&d0_data, &id_shape, 1, .int32);
+    defer _ = mlx.mlx_array_free(d0);
+    const d1 = mlx.mlx_array_new_data(&d1_data, &id_shape, 1, .int32);
+    defer _ = mlx.mlx_array_free(d1);
+    const drafts = [_]mlx.mlx_array{ d0, d1 };
+
+    var g = try Generator.mtpBatchedAcceptGraph(probs_all, &drafts, null, 2, .{}, s);
+    defer g.deinit();
+    try mlx.check(mlx.mlx_array_eval(g.corr_samples));
+    const corr = mlx.mlx_array_data_int32(g.corr_samples) orelse return error.InvalidDtype;
+    try testing.expectEqual(@as(i32, 1), corr[0]);
+    try testing.expectEqual(@as(i32, 1), corr[1]);
+    try testing.expectEqual(@as(i32, 3), corr[2]);
 }
 
 test "seeded MTP draft and correction draws replay despite unrelated MLX random draws" {

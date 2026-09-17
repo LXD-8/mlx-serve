@@ -5123,3 +5123,17 @@ Flash Next and Qwen3.5-0.8B; a turn appended past the snapshot still differs (co
 would have forwarded the whole thing in one chunk), and a cache-off boot differs from a
 cache-on boot on cold prompts too (32 + 1 vs 2 + 31 rows). Guard:
 `tests/test_hybrid_reuse_equivalence.sh` (byte-identical warm vs cold).
+
+## A group-padded verify row broke the sampled accept (#446)
+
+The dense batched MTP verify right-pads every row to the group's widest draft and sets
+`verify_len = width`, so a row's `verify_logits` is `[1, width, V]`. `mtpRoundFinish`
+handed that to the accept graph, and `mtpBatchedAcceptGraph` / `mtpBatchedLossyGraph`
+reshaped it to `(1+m, V)` from `m` alone. Any sampled row with `width > 1+m` raised
+inside mlx-c, the latch failed every request in the group with a 500. Greedy rows never
+reach the graph and `MLX_SERVE_MTP_BATCH_CORR=0` slices per position, so both escaped.
+
+Fix: `verifyRows2d` slices the first `1+m` rows before the reshape in both graphs (a
+short block is `error.MtpVerifyBlockShape`, never an MLX raise), and the finish filters
+only the `1+m` rows it reads. Guard: `batched corrections read only 1+m rows of a
+group-padded verify block`.
