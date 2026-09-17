@@ -1,18 +1,28 @@
 # Changelog
 
-## v26.9.4 — Request edges
+## v26.9.4 — Correctness Fixes, Chinese Translation, Benchmarks
 
-- **Benchmark your Mac from the menu bar.** A new Benchmarks window runs a pinned context ladder (512 to 16k tokens of synthetic code, a coding task per rung, plus a count-to-200 run as the speculation ceiling) against the loaded model, using the server's own timings. Runs are kept locally, and you can share one to the community board at mlxserve.com/benchmarks, which shows median tok/s by chip, GPU cores, memory and server settings. Sharing is opt-in and sends nothing that identifies you.
-- **`top_p: 0` is greedy.** It masked every token and sampled random vocabulary; it now behaves like `top_k: 1`.
-- **An image the server cannot read is refused by name.** A remote image URL (never fetched), bad base64 or an unreadable payload used to vanish from the prompt and answer "you haven't provided an image" with a 200 on every surface; it is a 400 that says what to send.
-- **Structured-output and stop-sequence edges.** A `json_schema` request without an object schema is a 400 instead of unconstrained JSON, on chat, Messages and Responses; an empty stop string no longer cuts the reply at position 0.
-- **Ollama and embeddings edges.** `/api/generate` with no prompt answers Ollama's load handshake (`done_reason: load`) instead of a 400, and an empty `/v1/embeddings` input is a 400 instead of a 500.
-- **`/props` reports the serving settings.** A new `settings` object names the effective KV quant, MTP mode and acceptance, drafter, PLD, decode attention quant and prefill chunk for the loaded model, and `GET /props?model=<id>` picks the model, so a benchmark can record what it ran under.
-- **Qwen3.8 Flash Next no longer crashes past 10 concurrent streams.** Reshuffling the batched decode group overran a fixed buffer and segfaulted the server; 32 streams now decode together (185 tok/s aggregate on M4 Max).
-- **A request with no `model` no longer swaps out the model you loaded.** On a server started without a model, the default stayed on the first chat model ever loaded, so a model-less request evicted the current one to reload it; the default now follows the latest chat load.
-- **A prompt-cache hit no longer changes a greedy reply.** On hybrid models the warm request forwarded its 31-token tail in two pieces where the cold one used one, and the different kernel tilings flipped near-tied tokens; the same prompt now decodes byte-for-byte the same warm and cold.
-- **Concurrent sampled requests on dense Qwen 3.5/3.8 no longer fail with `generation failed`.** When two drafts of different lengths shared a verify pass, the shorter one's acceptance step choked on its padding and took the whole group down with a 500 (#446).
-- **Structured output starts at the root value.** `json_schema` and JSON mode replies carry no whitespace before or after the JSON value, so a thinking model cannot pad or idle on it; the layout inside the value stays the model's own.
+### Highlights
+
+- **Benchmark your Mac from the menu bar.** Run a standardized context-and-coding benchmark against the loaded model using the server's own timings. Results stay local, with optional anonymous sharing to the community benchmarks at mlxserve.com/benchmarks.
+
+- **Qwen3.8 Flash Next now handles 32 concurrent streams.** Fixed a crash that occurred when running more than 10 streams. On an M4 Max, 32 streams can now decode at **185 tok/s aggregate**.
+
+- **`top_p: 0` is now greedy.** It behaves like `top_k: 1`, selecting only the highest-probability token.
+
+- **Invalid images now return useful errors.** Unreadable images, bad base64, and unsupported image payloads now return a clear **400 error** instead of silently disappearing from the prompt.
+
+- **More reliable structured output.** Invalid `json_schema` requests are rejected properly, empty stop sequences no longer terminate responses immediately, and JSON output now starts and ends cleanly at the root value.
+
+- **Better Ollama and embeddings compatibility.** Ollama's model-load handshake now works correctly, and empty embedding requests return a proper 400 instead of a server error.
+
+- **`/props` now reports active serving settings.** Inspect the effective KV quantization, MTP, drafter, PLD, attention quantization, prefill chunking, and other settings used by the loaded model.
+
+- **Model-less requests now use the latest loaded model.** Requests without a `model` no longer accidentally reload an older model and evict the one currently loaded.
+
+- **Prompt-cache hits now produce identical greedy output.** Fixed a hybrid-model issue where warm and cold requests could produce different tokens due to different kernel tiling.
+
+- **Concurrent speculative decoding is more reliable.** Fixed `generation failed` errors when sampled requests with different draft lengths shared a Qwen 3.5/3.8 verification pass.
 
 ---
 

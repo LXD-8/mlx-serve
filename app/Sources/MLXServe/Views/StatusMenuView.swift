@@ -498,8 +498,8 @@ struct StatusMenuView: View {
     @ViewBuilder private func throughputRows(_ t: ThroughputSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             statRow("Tokens generated", ThroughputSnapshot.formatTokens(t.displayedTokens))
-            statRow("Decode", "\(ThroughputSnapshot.formatTPS(server.decodeTPSNow)) now · \(ThroughputSnapshot.formatTPS(t.avgDecodeTPS)) avg tok/s")
-            statRow("Prefill", "\(ThroughputSnapshot.formatTPS(server.prefillTPSNow)) now · \(ThroughputSnapshot.formatTPS(t.avgPrefillTPS)) avg tok/s")
+            statRow("Decode", L10n.format("%@ now · %@ avg tok/s", ThroughputSnapshot.formatTPS(server.decodeTPSNow), ThroughputSnapshot.formatTPS(t.avgDecodeTPS)))
+            statRow("Prefill", L10n.format("%@ now · %@ avg tok/s", ThroughputSnapshot.formatTPS(server.prefillTPSNow), ThroughputSnapshot.formatTPS(t.avgPrefillTPS)))
         }
     }
 
