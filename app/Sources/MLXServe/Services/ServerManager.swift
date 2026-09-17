@@ -29,8 +29,10 @@ class ServerManager: ObservableObject {
         if let lan = lanChatModelId, let info = allModels.first(where: { $0.name == lan }) { return info }
         return residentChatModel
     }
-    /// The local entry that can ANSWER a chat request.
-    private var residentChatModel: ModelInfo? {
+    /// The local entry that can ANSWER a chat request. Also the benchmark
+    /// target: `modelInfo` is whatever loaded first (an image model counts),
+    /// and a LAN entry would measure another Mac under this one's hardware row.
+    var residentChatModel: ModelInfo? {
         if let m = modelInfo, m.servesChat, m.loaded { return m }
         return allModels.first { $0.servesChat && $0.loaded && $0.lanPeer == nil }
     }
