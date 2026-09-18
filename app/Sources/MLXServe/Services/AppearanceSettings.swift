@@ -11,6 +11,8 @@ import AppKit
 enum InterfacePrefKey {
     static let appearanceMode = "appearanceMode"
     static let accentColor = "accentColorName"
+    /// UI language override; the raw values are `AppLanguage`'s.
+    static let language = "appLanguage"
     static let textSize = "chatTextSize"
     static let compactMode = "compactMode"
     static let chatColumn = "chatColumnWidth"
@@ -161,19 +163,33 @@ enum AppAccentColor: String, CaseIterable, Identifiable {
 /// HAND per scene, so a new scene CAN forget it; the scan in
 /// `AppearanceSettingsTests` is what catches that, the same reasoning as the
 /// window-injection rules in app/CLAUDE.md.
-struct AppAppearance: ViewModifier {
+///
+/// It carries the UI language as well as the appearance because a language is
+/// the same kind of setting — one choice, honored by every window — and both
+/// have to be applied at the same place: the `\.locale` environment here at
+/// the root, and (through `BundleLanguageOverride`) the bundle lookup that
+/// `L10n` and AppKit read.
+struct AppChrome: ViewModifier {
     @AppStorage(InterfacePrefKey.appearanceMode) private var modeRaw = AppAppearanceMode.system.rawValue
     @AppStorage(InterfacePrefKey.accentColor) private var accentRaw = AppAccentColor.system.rawValue
+    @AppStorage(InterfacePrefKey.language) private var languageRaw = AppLanguage.system.rawValue
 
     func body(content: Content) -> some View {
         let mode = AppAppearanceMode(rawValue: modeRaw) ?? .system
         let accent = AppAccentColor(rawValue: accentRaw) ?? .system
+        let language = AppLanguage(rawValue: languageRaw) ?? .system
         content
             .preferredColorScheme(mode.colorScheme)
             .tint(accent.color)
+            // Re-resolving a literal is what an environment change is for; a
+            // view that merely re-renders with the same `Locale` value keeps
+            // the language it already resolved.
+            .environment(\.locale, language.locale ?? .autoupdatingCurrent)
+            .onAppear { BundleLanguageOverride.apply(language) }
+            .onChange(of: languageRaw) { _, _ in BundleLanguageOverride.apply(language) }
     }
 }
 
 extension View {
-    func appAppearance() -> some View { modifier(AppAppearance()) }
+    func appChrome() -> some View { modifier(AppChrome()) }
 }

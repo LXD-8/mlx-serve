@@ -33,6 +33,13 @@ struct MLXCoreApp: App {
     /// The View ▸ Interface menu writes the same keys the Settings rows do.
     @AppStorage(InterfacePrefKey.chatColumn) private var chatColumnRaw = ChatColumnWidth.wide.rawValue
     @AppStorage(InterfacePrefKey.compactMode) private var compactMode = false
+    /// The menu bar and every `CommandMenu` are built before the first
+    /// window's `.appChrome()` runs, so the launch-time language is applied
+    /// here as well as per scene (both are cheap and idempotent).
+    init() {
+        BundleLanguageOverride.apply(AppLanguage.current)
+    }
+
     /// Held, NOT observed: `AppState` publishes every streamed chat delta, and
     /// an observing App body rebuilds every scene root per delta. What the
     /// scene graph reads from it lives in the small observing views below.
@@ -106,6 +113,10 @@ struct MLXCoreApp: App {
                 .environmentObject(appState.server)
                 .environmentObject(appState.downloads)
                 .environmentObject(appState.voice)
+                // The tray popover is a surface like any other window: without
+                // this it would keep the system language while every window
+                // followed the setting.
+                .appChrome()
         } label: {
             // Observe the voice controller so the tray icon picks up the accent
             // tint the instant a hands-free session starts or stops.
@@ -156,7 +167,7 @@ struct MLXCoreApp: App {
                 .onDisappear {
                     Task { await appState.mcpManager.stopAll() }
                 }
-                .appAppearance()
+                .appChrome()
         }
         // Roomier than the old 900x650: this window is three things now
         // (transcript, model browser, media generators) and the two it gained
@@ -165,7 +176,7 @@ struct MLXCoreApp: App {
 
         Window("Browser", id: "browser") {
             BrowserView()
-                .appAppearance()
+                .appChrome()
         }
         .defaultSize(width: 1024, height: 768)
 
@@ -176,7 +187,7 @@ struct MLXCoreApp: App {
         Window("Server Log", id: "serverLog") {
             ServerLogWindowView()
                 .environmentObject(appState.server)
-                .appAppearance()
+                .appChrome()
         }
         .defaultSize(width: 900, height: 560)
 
@@ -188,7 +199,7 @@ struct MLXCoreApp: App {
             BenchmarkView()
                 .environmentObject(appState)
                 .environmentObject(appState.server)
-                .appAppearance()
+                .appChrome()
         }
         .defaultSize(width: 1040, height: 680)
 
@@ -219,7 +230,7 @@ struct MLXCoreApp: App {
                     .environmentObject(appState.server)
                     .environmentObject(appState.terminals)
                     .frame(minWidth: 560, minHeight: 360)
-                    .appAppearance()
+                    .appChrome()
             }
         }
         .defaultSize(width: 900, height: 600)
@@ -233,7 +244,7 @@ struct MLXCoreApp: App {
                 .environmentObject(appState.agents)
                 .environmentObject(appState.server)
                 .frame(minWidth: 760, minHeight: 520)
-                .appAppearance()
+                .appChrome()
         }
         .defaultSize(width: 900, height: 640)
 
@@ -445,7 +456,7 @@ private struct ModelSettingsWindowRoot: View {
             ModelSettingsSheet(request: request)
                 .environmentObject(appState)
                 .environmentObject(appState.server)
-                .appAppearance()
+                .appChrome()
         }
     }
 }
