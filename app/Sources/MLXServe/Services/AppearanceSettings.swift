@@ -186,7 +186,9 @@ struct AppChrome: ViewModifier {
             // the language it already resolved.
             .environment(\.locale, language.locale ?? .autoupdatingCurrent)
             .onAppear { BundleLanguageOverride.apply(language) }
-            .onChange(of: languageRaw) { _, _ in BundleLanguageOverride.apply(language) }
+            // `L10n` resolves to a plain `String` while the body is built, so
+            // the only thing that re-runs those bodies is a new identity.
+            .id(languageRaw)
     }
 }
 

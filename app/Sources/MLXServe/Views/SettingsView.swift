@@ -2268,7 +2268,17 @@ private struct InterfaceSectionContent: View {
     var body: some View {
         SettingsRow(title: "Language",
                     explainer: "The app's own language. System follows macOS — including the per-app language in System Settings ▸ General ▸ Language & Region.") {
-            Picker("", selection: $languageRaw) {
+            Picker("", selection: Binding(
+                get: { languageRaw },
+                // Swapped BEFORE the write, because the preference change is
+                // what re-renders the subtree and every `L10n` lookup runs
+                // inside that render: applying the bundle afterwards leaves the
+                // strings it just built in the old language.
+                set: { newValue in
+                    AppLanguage.select(AppLanguage(rawValue: newValue) ?? .system)
+                    languageRaw = newValue
+                }
+            )) {
                 ForEach(AppLanguage.allCases) { language in
                     // A language names itself, so "English" and "简体中文" are
                     // NOT looked up: they read the same in every UI language.
@@ -2281,12 +2291,6 @@ private struct InterfaceSectionContent: View {
             }
             .labelsHidden()
             .frame(width: 160)
-            .onChange(of: languageRaw) { _, _ in
-                // Both paths again, here rather than only in `AppChrome`: the
-                // picker's own change is the instant the user is looking for,
-                // and the modifier's `onChange` rides the same value.
-                BundleLanguageOverride.apply(AppLanguage(rawValue: languageRaw) ?? .system)
-            }
         }
         SettingsRow(title: "Appearance", explainer: "Follow the system setting, or force light/dark for this app only.") {
             Picker("", selection: $appearanceModeRaw) {
