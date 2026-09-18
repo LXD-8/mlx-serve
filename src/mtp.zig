@@ -845,6 +845,7 @@ pub const MtpModel = struct {
         const bits = draftHeadBitsFromEnv();
         if (bits == 0) return;
         if (target.lm_head_s.ctx == null) return; // dense bf16 head — nothing to shrink
+        if (target.rht != null) return; // a requantized copy would need the rotated input at every draft site
         // The head's TRUE params, not the trunk global — mixed checkpoints
         // (hy_v3: 8-bit head over a 2-bit trunk) diverge, and requantizing
         // with the wrong source bits reads garbage.
@@ -1022,6 +1023,7 @@ pub const RerankCoarse = struct {
 pub fn buildRerankCoarse(s: mlx.mlx_stream, target: *Transformer, bits: u32) ?RerankCoarse {
     if (bits == 0) return null;
     if (target.lm_head_s.ctx == null) return null; // dense bf16 - row-gather rerank unbuilt/unmeasured
+    if (target.rht != null) return null;
     const w_shape = mlx.getShape(target.lm_head_w);
     if (w_shape.len != 2 or w_shape[0] < TOP32_MIN_ROWS) return null;
     const head_qp = headQuantParams(&target.config, target.lm_head_w, target.lm_head_s);
@@ -1093,9 +1095,14 @@ pub fn maskAndArgmax(s: mlx.mlx_stream, logits_in: mlx.mlx_array, suppress_mask:
 pub fn fullReadoutArgmax(
     s: mlx.mlx_stream,
     target: *Transformer,
-    x: mlx.mlx_array,
+    x_in: mlx.mlx_array,
     suppress_mask: ?mlx.mlx_array,
 ) !mlx.mlx_array {
+    const x_rot = try target.rotateInputFor(target.lm_head_w, x_in);
+    defer if (x_rot) |r| {
+        _ = mlx.mlx_array_free(r);
+    };
+    const x = x_rot orelse x_in;
     var logits = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(logits);
     if (target.lm_head_s.ctx == null) {
@@ -2541,7 +2548,7 @@ fn embedTargetTokens(
     ));
     var out = mlx.mlx_array_new();
     try mlx.check(mlx.mlx_reshape(&out, dequant, &out_shape, 3, s));
-    return out;
+    return target.unrotateEmbedding(out);
 }
 
 /// Project the MTP post-norm hidden through the lm_head. Draft steps go
@@ -2579,9 +2586,13 @@ fn targetLmHead(self: *const MtpModel, target: *Transformer, x: mlx.mlx_array, s
     // whole process in mlx's shape check, live 2026-07-14). Non-affine trunks
     // keep the config fallback.
     const qp = headQuantParams(&target.config, target.lm_head_w, target.lm_head_s);
+    const x_rot = try target.rotateInputFor(target.lm_head_w, x);
+    defer if (x_rot) |r| {
+        _ = mlx.mlx_array_free(r);
+    };
     try mlx.check(mlx.mlx_quantized_matmul(
         &out,
-        x,
+        x_rot orelse x,
         target.lm_head_w,
         target.lm_head_s,
         target.lm_head_b,
@@ -4254,6 +4265,8 @@ test "mtp: multi-row forward projects the LAST row only and equals appendHistory
     defer _ = mlx.mlx_array_free(lm_w);
 
     var xfm: Transformer = undefined;
+
+    xfm.rht = null;
     xfm.allocator = allocator;
     xfm.s = s;
     xfm.config = .{};
@@ -5053,6 +5066,7 @@ pub const RerankFixture = struct {
             s,
         ));
         var xfm: Transformer = undefined;
+        xfm.rht = null;
         xfm.config = .{};
         xfm.config.hidden_size = @intCast(hidden);
         xfm.config.quant_mode = .affine;

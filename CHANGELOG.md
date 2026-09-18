@@ -1,5 +1,14 @@
 # Changelog
 
+## v26.9.5 — Bonsai - unreleased
+
+### Highlights
+- **Prism Bonsai 2 runs.** `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` (Hadamard-rotated 2-bit Qwen3.8-27B, text + vision) loads and serves like any Qwen 27B.
+
+### Changes
+- Qwen3.8 family: a thinking request that names no `reasoning_effort` renders as low and now gets low's 2048-token budget on chat and messages; an explicit effort or `--reasoning-budget` still wins.
+- `mlx-serve launch pi` sends the picked thinking level as `reasoning_effort` (was `enable_thinking` only, which dropped low/medium).
+
 ## v26.9.4 — Correctness Fixes, Chinese Translation, Benchmarks
 
 ### Highlights

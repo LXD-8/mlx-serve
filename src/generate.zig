@@ -3127,8 +3127,8 @@ pub const Generator = struct {
                 .mtp_accept_param = accept_route.param,
                 .mtp_cache = mtp_cache,
                 .mtp_position_base = mtp_position_base,
-                .mtp_depth = resolveMtpDepthCapForProfile(options.mtp_depth, mtp_cost_profile),
-                .mtp_depth_free = if (xfm.mtp_depth_free != 0) xfm.mtp_depth_free else mtpDepthCapFree(options.mtp_depth),
+                .mtp_depth = resolveMtpDepthCapForProfile(xfm.config.mtpDepth(options.mtp_depth), mtp_cost_profile),
+                .mtp_depth_free = if (xfm.mtp_depth_free != 0) xfm.mtp_depth_free else mtpDepthCapFree(xfm.config.mtpDepth(options.mtp_depth)),
                 .mtp_ev_costs = mtpEvCosts(mtp_cost_profile),
                 // Start at depth 1 and climb with evidence: the cheap depth
                 // is the safe default (1.11x on cold/creative content), and
@@ -15253,6 +15253,7 @@ test "MTP EV seed round-trips on the qwen4 head; a fresh or absent head reads nu
     // scratch. Only the two seed fields are touched here; the rest of the head
     // (and of the Transformer) is never read on this path.
     var t: Transformer = undefined;
+    t.rht = null;
     t.qwen4_mtp = null;
     const ref = MtpHeadRef{ .qwen4 = &t };
 
@@ -18217,6 +18218,7 @@ test "MTP continuation releases its owned chain when drafting fails" {
     const s = mlx.mlx_default_cpu_stream_new();
     defer _ = mlx.mlx_stream_free(s);
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.qwen4_mtp = null;
     var state: Transformer.Qwen4MtpState = undefined;
@@ -18256,6 +18258,7 @@ test "MTP continuation releases its owned chain when drafting fails" {
 test "batched MTP state includes the last row activated by round begin" {
     const allocator = testing.allocator;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.qwen4_mtp_owner = null;
     var head: transformer_mod.Qwen4Mtp = undefined;
     head.cache = try KVCache.init(allocator, 1);
@@ -18716,6 +18719,7 @@ test "MTP detaching a pre-draft preserves the committed head boundary" {
     for ([_]bool{ false, true }) |owned| {
         for ([_]bool{ false, true }) |apply_stash| {
             var xfm: Transformer = undefined;
+            xfm.rht = null;
             xfm.s = stream;
             var gen: Generator = undefined;
             gen.xfm = &xfm;

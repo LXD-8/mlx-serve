@@ -1078,6 +1078,12 @@ pub fn fillOptionalToolDefKeys(allocator: std.mem.Allocator, tools_json: []const
 ///
 /// Substring on the KEY, so a family reading a different one is untouched:
 /// muse's `reasoning_strength` is a near-miss the corpus pins.
+/// Qwen3.8's effort vocabulary (xhigh|medium|low); `qwen38EffortFor` maps an
+/// absent effort to low on this family.
+pub fn isQwen38EffortTemplate(tpl: []const u8) bool {
+    return std.mem.indexOf(u8, tpl, "'xhigh'") != null;
+}
+
 pub fn templateConsumesEffort(tpl: []const u8) bool {
     return std.mem.indexOf(u8, tpl, "reasoning_effort") != null;
 }
@@ -1155,7 +1161,7 @@ fn serializeExtraContext(allocator: std.mem.Allocator, chat_config: *const ChatC
     // accepted-values tuple, so a reworded raise message can't drift the
     // detection. EVERY 3.8 template raises on OpenAI's "high", so this keys the
     // mapping for the whole family.
-    const qwen38_style = std.mem.indexOf(u8, chat_config.chat_template, "'xhigh'") != null;
+    const qwen38_style = isQwen38EffortTemplate(chat_config.chat_template);
     // Whether the template REFUSES thinking-off is a SEPARATE question from the
     // effort vocabulary, and the two split inside one family: 2.4T-A95B raises
     // ("Disabling thinking is not supported"), the 27B answers that arm the 3.6

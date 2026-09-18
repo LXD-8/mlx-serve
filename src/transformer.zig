@@ -8,6 +8,9 @@ const qwen4_mod = @import("qwen4_exp.zig");
 const mtp_mod = @import("mtp.zig");
 const mlx = @import("mlx.zig");
 const mrope = @import("mrope.zig");
+const rht = @import("rht.zig");
+const qmv2 = @import("qmv2.zig");
+const gdn_decode = @import("gdn_decode.zig");
 const kv_quant = @import("kv_quant.zig");
 
 pub const KVQuantConfig = kv_quant.KVQuantConfig;
@@ -9972,6 +9975,7 @@ test "persistent group: drop a member does not free kinds the adopt still reads"
     defer for (&slots) |*sl| sl.deinit(alloc);
     var ctxs = [_]*ForwardCtx{ &slots[0].ctx, &slots[1].ctx };
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = alloc;
     xfm.ssm_group = .{ .allocator = alloc };
@@ -9987,6 +9991,7 @@ test "persistent group: drop a member does not free kinds the adopt still reads"
 
 fn ssmTickStubXfm(alloc: std.mem.Allocator, s: mlx.mlx_stream, persist: bool) Transformer {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = alloc;
     xfm.persistent_group_state_override = persist;
@@ -10534,6 +10539,7 @@ test "QSA key history advances by S not 1" {
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
     var entry: SSMCacheEntry = .{ .conv_state = .{ .ctx = null }, .ssm_state = .{ .ctx = null }, .initialized = true };
@@ -10551,6 +10557,7 @@ test "qsa raw-key ring is O(RING_ROWS) at N rows" {
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
 
@@ -10646,6 +10653,7 @@ test "qsa leftover: restore at L-30 then append/rollback re-pools bit-identicall
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
 
@@ -10734,6 +10742,7 @@ test "qsa rollback: a partial accept keeps the raw-key buffer and re-slices to k
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
     xfm.qsa_score_bank_builds = 0;
@@ -10867,6 +10876,7 @@ test "qwen4 MTP head: two explicit states with different origins and stash lengt
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const t = std.testing;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = mlx.gpuStream();
     xfm.allocator = t.allocator;
     xfm.qwen4_mtp_owner = null;
@@ -10922,6 +10932,7 @@ test "qwen4 MTP head: two requests keep their own state through activate/release
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const t = std.testing;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = mlx.gpuStream();
     xfm.allocator = t.allocator;
     xfm.qwen4_mtp_owner = null;
@@ -11301,6 +11312,7 @@ test "batched decode mask at verify width: row j of slot n sees its own causal p
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const t = std.testing;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = mlx.gpuStream();
     xfm.allocator = t.allocator;
     // Two slots, three verify rows each; kv_len is the length AFTER the rows were appended.
@@ -11328,6 +11340,7 @@ test "qwen4 MTP head: a clamp below the raw ring is named, not an emptied histor
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
 
@@ -11400,6 +11413,7 @@ test "qwen4 MTP head: a warm clamp restores exactly from the leftover marked at 
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
 
@@ -11502,6 +11516,7 @@ test "qwen4 MTP head: a clamp whose retained ring is shorter than the kept lefto
     const t = std.testing;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = t.allocator;
 
@@ -14674,6 +14689,8 @@ pub const Transformer = struct {
     // Pre-transposed plain-bf16 linear_attn weights owned by the Transformer
     // (Unsloth Dynamic checkpoints — null for the common all-quantized case).
     moe_owned_bf16: ?[]mlx.mlx_array = null,
+    /// Prism Hadamard sign vectors keyed on weight handles; null on every other checkpoint.
+    rht: ?*rht.Registry = null,
 
     // When non-null, the next forward pass captures the post-final-norm
     // hidden state at the last position into the pointed-to array
@@ -15334,6 +15351,18 @@ pub const Transformer = struct {
             log.info("[qwen4] n-gram table {d} rows x {d} ({d}-bit, mmapped), PLE at layer {d}, QSA budget {d}/{d}\n", .{ st.table.rows, st.table.dim, st.table.bits, config.ple_layer_idx, config.indexer_budget, config.indexer_compress_ratio });
         }
 
+        var rht_registry: ?*rht.Registry = null;
+        errdefer if (rht_registry) |reg| {
+            reg.deinit();
+            allocator.destroy(reg);
+        };
+        if (config.hadamard_block > 0) {
+            const reg = try allocator.create(rht.Registry);
+            reg.* = rht.Registry.init(allocator, config.hadamard_block);
+            rht_registry = reg;
+            try registerRhtSigns(reg, weights, s);
+        }
+
         const profile_head_shape = mlx.getShape(lm_head_w);
         const profile_head_n: c_int = if (profile_head_shape.len == 2) profile_head_shape[0] else 0;
         const uniform_profile_bits = config.quant_bits == 4 or config.quant_bits == 6 or config.quant_bits == 8;
@@ -15430,6 +15459,7 @@ pub const Transformer = struct {
             .ssm_entries = ssm_entries,
             .moe_seq_offset = 0,
             .moe_owned_bf16 = moe_owned_bf16,
+            .rht = rht_registry,
             .hybrid_layers = hybrid_layers,
             .embedding_norm = embedding_norm_w,
             .prompt_cache = null,
@@ -16129,6 +16159,11 @@ pub const Transformer = struct {
             self.allocator.destroy(mdl);
             self.dsv4 = null;
         }
+        if (self.rht) |reg| {
+            reg.deinit();
+            self.allocator.destroy(reg);
+            self.rht = null;
+        }
         if (self.compiled_forward) |cf| _ = mlx.mlx_closure_free(cf);
         if (self.compiled_gelu) |cg| _ = mlx.mlx_closure_free(cg);
         if (self.compiled_geglu) |cg| _ = mlx.mlx_closure_free(cg);
@@ -16260,6 +16295,18 @@ pub const Transformer = struct {
         // affine 8-bit shared MLP inside an nvfp4 QAT model) are detected on
         // first touch — x's inner dim pins (bits, group_size) exactly.
         const qp = self.quantParamsHinted(w, sc, lastDim(x));
+        // The half2 2-bit kernels (qmv2.zig) are measured on Hadamard packs
+        // only; every other 2-bit pack keeps stock qmm.
+        if (self.rht) |reg| {
+            const signs = reg.get(w);
+            const xr = if (signs) |sg| try reg.applyIn(x, sg, self.s) else x;
+            defer if (signs != null) {
+                _ = mlx.mlx_array_free(xr);
+            };
+            if (try qmv2.qmv(xr, w, sc, bi, qp.bits, qp.group_size, self.s)) |y| return y;
+            if (try qmv2.qmvRows(xr, w, sc, bi, qp.bits, qp.group_size, signs != null and reg.bias_is_neg_scale, self.s)) |y| return y;
+            return qmatmulBits(xr, w, sc, bi, qp.bits, qp.group_size, qp.mode, self.s);
+        }
         return qmatmulBits(x, w, sc, bi, qp.bits, qp.group_size, qp.mode, self.s);
     }
 
@@ -16880,6 +16927,39 @@ pub const Transformer = struct {
         return result;
     }
 
+    /// Hadamard packs: `sum = h + delta` and `rms_norm(sum, w)` with its input
+    /// rotation in one dispatch; the rotation is seeded so the projections that
+    /// read `normed` skip their own. Without `want_normed`, `normed` IS the
+    /// rotated array (only rotated projections read it). Null = not a Hadamard
+    /// pack or a shape the kernel declines.
+    fn rhtAddNormRotate(self: *Transformer, h: mlx.mlx_array, delta: mlx.mlx_array, w: mlx.mlx_array, want_normed: bool) !?struct { sum: mlx.mlx_array, normed: mlx.mlx_array } {
+        const reg = self.rht orelse return null;
+        const hidden: c_int = @intCast(self.config.hidden_size);
+        const signs = reg.signsFor(hidden) orelse return null;
+        const r = (try rht.normRotate(h, delta, w, self.rms_eps_arr, signs, reg.block, want_normed, self.s)) orelse return null;
+        const key = r.normed orelse r.rot;
+        try reg.seed(key, signs, r.rot);
+        if (r.normed != null) _ = mlx.mlx_array_free(r.rot);
+        return .{ .sum = r.sum.?, .normed = key };
+    }
+
+    /// Hadamard packs: `x` in the basis `w`'s codes live in, for callers that
+    /// run their own matmul on a trunk weight. Null = `w` is not rotated.
+    pub fn rotateInputFor(self: *Transformer, w: mlx.mlx_array, x: mlx.mlx_array) !?mlx.mlx_array {
+        const reg = self.rht orelse return null;
+        const signs = reg.get(w) orelse return null;
+        return try reg.applyIn(x, signs, self.s);
+    }
+
+    /// Hadamard packs: gathered embedding rows back to the residual basis.
+    /// Takes ownership of `rows`.
+    pub fn unrotateEmbedding(self: *const Transformer, rows: mlx.mlx_array) !mlx.mlx_array {
+        const reg = self.rht orelse return rows;
+        const signs = reg.get(self.emb_w) orelse return rows;
+        defer _ = mlx.mlx_array_free(rows);
+        return rht.transform(rows, signs, reg.block, true, self.s);
+    }
+
     inline fn rmsNorm(self: *const Transformer, x: mlx.mlx_array, w: mlx.mlx_array) !mlx.mlx_array {
         if (self.config.norm_groups > 1) {
             // Only the residual-width norms are grouped; a per-head q/k norm
@@ -16973,7 +17053,7 @@ pub const Transformer = struct {
         const out_shape = [_]c_int{ batch, seq_len, @intCast(self.config.hidden_size) };
         var reshaped = mlx.mlx_array_new();
         try mlx.check(mlx.mlx_reshape(&reshaped, emb, &out_shape, 3, self.s));
-        return reshaped;
+        return self.unrotateEmbedding(reshaped);
     }
 
     pub fn embedding(self: *const Transformer, token_ids: mlx.mlx_array) !mlx.mlx_array {
@@ -21660,6 +21740,7 @@ pub const Transformer = struct {
     test "qwen4MtpResetOwned: a non-MTP request leaves the head untouched" {
         const t = std.testing;
         var xfm: Transformer = undefined;
+        xfm.rht = null;
         xfm.s = mlx.gpuStream();
         xfm.allocator = t.allocator;
         const head_cache = try KVCache.init(t.allocator, 1);
@@ -22983,11 +23064,20 @@ pub const Transformer = struct {
         // ms-vs-N sweep separates the forward's per-layer slope from its fixed
         // cost. Every layer that runs does its complete real work, so the slope
         // is a marginal cost, not an ablation artifact.
-        for (0..layerCap(cfg.num_hidden_layers)) |layer_idx| {
+        // Hadamard packs: the previous layer's tail already produced this
+        // layer's input norm (and its rotation, seeded into the registry).
+        var carried_normed: ?mlx.mlx_array = null;
+        errdefer if (carried_normed) |c| {
+            _ = mlx.mlx_array_free(c);
+        };
+        defer if (self.rht) |reg| reg.dropMemo();
+        const n_layers = layerCap(cfg.num_hidden_layers);
+        for (0..n_layers) |layer_idx| {
             const li: u32 = @intCast(layer_idx);
             const lw = &ml[layer_idx];
 
-            const normed = try self.rmsNorm(h, lw.input_norm);
+            const normed = if (carried_normed) |c| c else try self.rmsNorm(h, lw.input_norm);
+            carried_normed = null;
             defer _ = mlx.mlx_array_free(normed);
 
             // Inkling: the attention call also advances the k/v short-conv
@@ -23106,7 +23196,14 @@ pub const Transformer = struct {
                 // on the norm), so one kernel does both — see fusedAddRmsNorm.
                 var ff_normed = mlx.mlx_array_new();
                 defer _ = mlx.mlx_array_free(ff_normed);
-                if (try fusedAddRmsNorm(self.s, h, attn_out, lw.post_attn_norm, self.rms_eps_arr)) |fused| {
+                // A dense MLP only reads `ff_normed` through rotated weights;
+                // a MoE router is a plain matmul and needs the real norm.
+                if (try self.rhtAddNormRotate(h, attn_out, lw.post_attn_norm, cfg.isMoe())) |fused| {
+                    _ = mlx.mlx_array_free(h);
+                    h = fused.sum;
+                    _ = mlx.mlx_array_free(ff_normed);
+                    ff_normed = fused.normed;
+                } else if (try fusedAddRmsNorm(self.s, h, attn_out, lw.post_attn_norm, self.rms_eps_arr)) |fused| {
                     _ = mlx.mlx_array_free(h);
                     h = fused.sum;
                     _ = mlx.mlx_array_free(ff_normed);
@@ -23127,10 +23224,19 @@ pub const Transformer = struct {
                 };
                 defer _ = mlx.mlx_array_free(mlp_out);
 
-                var h_next = mlx.mlx_array_new();
-                try mlx.check(mlx.mlx_add(&h_next, h, mlp_out, self.s));
-                _ = mlx.mlx_array_free(h);
-                h = h_next;
+                const last = layer_idx + 1 == n_layers;
+                const next_norm = if (last) self.final_norm else ml[layer_idx + 1].input_norm;
+                const next_linear = !last and ml[layer_idx + 1].attn == .linear;
+                if (try self.rhtAddNormRotate(h, mlp_out, next_norm, last or next_linear)) |fused| {
+                    _ = mlx.mlx_array_free(h);
+                    h = fused.sum;
+                    carried_normed = fused.normed;
+                } else {
+                    var h_next = mlx.mlx_array_new();
+                    try mlx.check(mlx.mlx_add(&h_next, h, mlp_out, self.s));
+                    _ = mlx.mlx_array_free(h);
+                    h = h_next;
+                }
             }
 
             if (prof) {
@@ -23156,7 +23262,8 @@ pub const Transformer = struct {
         ctx.moe_seq_offset.* += @intCast(seq_len);
         dt.end(h);
 
-        var final_normed = try self.rmsNorm(h, self.final_norm);
+        var final_normed = if (carried_normed) |c| c else try self.rmsNorm(h, self.final_norm);
+        carried_normed = null;
         _ = mlx.mlx_array_free(h);
 
         // Inkling muP logit scaling: hidden ÷ logits_mup_width_multiplier
@@ -25312,6 +25419,7 @@ pub const Transformer = struct {
     /// is off or the weights cannot be joined — the caller keeps three matmuls.
     fn fusedQkvFor(self: *Transformer, fa: *const FullAttnWeights, layer: u32) !?*const FusedQkv {
         if (!fusedQkvEnabled()) return null;
+        if (self.rht != null) return null; // a fused copy would bypass the per-weight rotation
         if (self.qkv_fused == null) {
             const slots = try self.allocator.alloc(?FusedQkv, self.config.num_hidden_layers);
             @memset(slots, null);
@@ -26560,6 +26668,40 @@ pub const Transformer = struct {
         }
         const inv_scale_sq = self.gdn_q_scale.?;
         const inv_sqrt_sc = self.gdn_k_scale.?;
+
+        // Hadamard packs, plain decode: prework + recurrence + norm-gate + the
+        // out_proj rotation in two dispatches (gdn_decode.zig).
+        if (self.rht != null and batch == 1 and seq_len == 1 and projected == null and !skip_output and
+            !self.spec_capture_ssm and ssm.initialized and ssm.ssm_state.ctx != null and kernel == 4 and
+            !cfg.kda_vector_gate and !cfg.kdaUsesBoundedGate() and !cfg.kda_sigmoid_out_gate)
+        fast: {
+            const reg = self.rht.?;
+            const signs = reg.get(la.out_w) orelse break :fast;
+            if (self.gdn_eps == null) self.gdn_eps = mlx.mlx_array_new_float(cfg.rms_norm_eps);
+            const r = (try gdn_decode.step(.{ .hk = num_k_heads, .hv = num_v_heads, .dk = dk, .dv = dv }, .{
+                .qkv = qkv,
+                .z = z_proj,
+                .a = a_proj,
+                .b = b_proj,
+                .conv_state = ssm.conv_state,
+                .ssm_state = ssm.ssm_state,
+                .conv_w = la.conv1d_w,
+                .A_log = la.A_log,
+                .dt_bias = la.dt_bias,
+                .q_scale = inv_scale_sq,
+                .k_scale = inv_sqrt_sc,
+                .norm_w = la.norm_w,
+                .eps = self.gdn_eps.?,
+                .signs = signs,
+            }, self.s)) orelse break :fast;
+            _ = mlx.mlx_array_free(ssm.conv_state);
+            ssm.conv_state = r.conv_state;
+            _ = mlx.mlx_array_free(ssm.ssm_state);
+            ssm.ssm_state = r.ssm_state;
+            defer _ = mlx.mlx_array_free(r.rot);
+            try reg.seed(r.rot, signs, r.rot);
+            return self.qmatmul(r.rot, la.out_w, la.out_s, la.out_b);
+        }
 
         var q_scaled = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(q_scaled);
@@ -37840,6 +37982,78 @@ fn getWeightFmtOpt(weights: *const Weights, buf: *[256]u8, comptime fmt: []const
     return weights.get(name);
 }
 
+/// Binds every `<base>.signs` to `<base>.weight`. A sign vector without its
+/// weight fails the load by name.
+/// Prism's codec writes affine biases as exactly -scales (ternary codes
+/// 0..2 -> -1..1); the verify-width kernel's fast path depends on it.
+/// Lazy `max |scales + biases|` as f32, or null when either is absent.
+fn biasNegScalePeak(weights: *const Weights, base: []const u8, s: mlx.mlx_stream) !?mlx.mlx_array {
+    var nb: [256]u8 = undefined;
+    const sc = weights.get(std.fmt.bufPrint(&nb, "{s}.scales", .{base}) catch return null) orelse return null;
+    const bi = weights.get(std.fmt.bufPrint(&nb, "{s}.biases", .{base}) catch return null) orelse return null;
+    var sum = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(sum);
+    try mlx.check(mlx.mlx_add(&sum, sc, bi, s));
+    var mx_abs = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(mx_abs);
+    try mlx.check(mlx.mlx_abs(&mx_abs, sum, s));
+    var peak = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(peak);
+    try mlx.check(mlx.mlx_max(&peak, mx_abs, false, s));
+    var peak32 = mlx.mlx_array_new();
+    try mlx.check(mlx.mlx_astype(&peak32, peak, .float32, s));
+    return peak32;
+}
+
+/// Binds every `<base>.signs` to `<base>.weight`; ONE eval for every
+/// sign hash and bias probe (a sync per weight was ~900 syncs at load).
+fn registerRhtSigns(reg: *rht.Registry, weights: *const Weights, s: mlx.mlx_stream) !void {
+    const Pending = struct { w: mlx.mlx_array, signs: mlx.mlx_array, f32: mlx.mlx_array, peak: ?mlx.mlx_array };
+    var pending = std.ArrayList(Pending).empty;
+    defer {
+        for (pending.items) |p| {
+            _ = mlx.mlx_array_free(p.f32);
+            if (p.peak) |pk| _ = mlx.mlx_array_free(pk);
+        }
+        pending.deinit(reg.allocator);
+    }
+    var it = weights.map.iterator();
+    var nb: [256]u8 = undefined;
+    while (it.next()) |kv| {
+        const key = kv.key_ptr.*;
+        if (!std.mem.endsWith(u8, key, rht.SIGNS_SUFFIX)) continue;
+        const base = key[0 .. key.len - rht.SIGNS_SUFFIX.len];
+        const w = weights.get(std.fmt.bufPrint(&nb, "{s}.weight", .{base}) catch return error.MissingWeight) orelse {
+            log.err("MISSING WEIGHT: {s}.weight (has Hadamard signs)\n", .{base});
+            return error.MissingWeight;
+        };
+        const f = try rht.signsF32(kv.value_ptr.*, s);
+        errdefer _ = mlx.mlx_array_free(f);
+        const peak = try biasNegScalePeak(weights, base, s);
+        try pending.append(reg.allocator, .{ .w = w, .signs = kv.value_ptr.*, .f32 = f, .peak = peak });
+    }
+    {
+        const vec = mlx.mlx_vector_array_new();
+        defer _ = mlx.mlx_vector_array_free(vec);
+        for (pending.items) |p| {
+            try mlx.check(mlx.mlx_vector_array_append_value(vec, p.f32));
+            if (p.peak) |pk| try mlx.check(mlx.mlx_vector_array_append_value(vec, pk));
+        }
+        try mlx.check(mlx.mlx_eval(vec));
+    }
+    // Prism's codec writes affine biases as exactly -scales (ternary codes
+    // 0..2 -> -1..1); the verify-width kernel's fast path depends on it.
+    for (pending.items) |p| {
+        try reg.register(p.w, p.signs, p.f32);
+        if (reg.bias_is_neg_scale) {
+            var v: f32 = 1;
+            if (p.peak) |pk| try mlx.check(mlx.mlx_array_item_float32(&v, pk));
+            reg.bias_is_neg_scale = v == 0;
+        }
+    }
+    log.info("[rht] {d} weights carry block-{d} Hadamard rotations (bias == -scale: {}, conflicting widths: {d})\n", .{ reg.count(), reg.block, reg.bias_is_neg_scale, reg.conflictingWidths() });
+}
+
 fn getLayerWeightOpt(weights: *const Weights, buf: *[256]u8, prefix: []const u8, layer: u32, suffix: []const u8) ?mlx.mlx_array {
     const name = std.fmt.bufPrint(buf, "{s}.layers.{d}.{s}", .{ prefix, layer, suffix }) catch unreachable;
     return weights.get(name);
@@ -40064,6 +40278,7 @@ fn conv1dTailRetentionDelta(batch: c_int, seq: c_int, cdim: c_int, kernel: c_int
     compact_conv_state_override = true;
     defer compact_conv_state_override = saved;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.spec_capture_ssm = false;
 
@@ -40157,6 +40372,8 @@ fn conv1dBitCopy(batch: c_int, seq: c_int, cdim: c_int, kernel: c_int, compact: 
     defer compact_conv_state_override = saved;
 
     var xfm: Transformer = undefined;
+
+    xfm.rht = null;
     xfm.s = s;
     xfm.spec_capture_ssm = false;
     var prng = std.Random.DefaultPrng.init(0xB17E_C0DE);
@@ -40183,6 +40400,8 @@ fn conv1dTwoChunk(batch: c_int, t1: c_int, t2: c_int, cdim: c_int, kernel: c_int
     defer compact_conv_state_override = saved;
 
     var xfm: Transformer = undefined;
+
+    xfm.rht = null;
     xfm.s = s;
     xfm.spec_capture_ssm = false;
     var prng = std.Random.DefaultPrng.init(0xA11C_EDED);
@@ -40548,6 +40767,8 @@ test "QSA checkpoint aux+pooled bytes are O(rows + checkpoints)" {
     try testing.expectEqual(@as(c_int, 46), dest[0].qsa_hist_rows);
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     const extra_shape = [_]c_int{ 1, 1, hd };
@@ -40760,6 +40981,7 @@ test "handoffQsaHistoryToLatest: the newest snap takes a VIEW of the live buffer
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const s = mlx.gpuStream();
     var t: Transformer = undefined;
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     const hd: c_int = 16;
@@ -40813,6 +41035,7 @@ test "handoffQsaHistoryToLatest materializes when the buffer's slack past the sn
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const s = mlx.gpuStream();
     var t: Transformer = undefined;
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     const hd: c_int = 16;
@@ -40873,6 +41096,8 @@ test "applyQsaHistoryAt: a sliced restore is a VIEW of the entry's history; the 
     try testing.expectEqual(src_ptr, dest_ptr);
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     var extra = mlx.mlx_array_new();
@@ -44776,6 +45001,8 @@ test "ropeAtPositions YaRN: cos/sin carry mscale on the rotated slice" {
     defer _ = mlx.mlx_array_free(freqs);
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.config = c;
@@ -44820,6 +45047,8 @@ test "qsa indexer scalar rope applies yarn mscale to first rope_dims only" {
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.config = .{};
     t.config.yarn_attention_factor = 2.0;
@@ -53911,6 +54140,138 @@ test "gdn packed prework: fused at production Hk/Hv serves B=6,8,16 S=1 per row"
     }
 }
 
+test "gdn_decode.step: bit-identical to prework -> recurrence -> norm-gate -> rotation, states included" {
+    const s = mlx.gpuStream();
+    gdn_decode_fused_override = true;
+    defer gdn_decode_fused_override = null;
+    var prng = std.Random.DefaultPrng.init(0xB0B5A1);
+    const rnd = prng.random();
+    const hk: c_int = 2;
+    const hv: c_int = 8;
+    const dk: c_int = 128;
+    const dv: c_int = 128;
+    const c_dim: c_int = hk * dk * 2 + hv * dv;
+    const value_dim: c_int = hv * dv;
+
+    const q_scale = bf16Scalar(1.0 / 128.0, s);
+    defer _ = mlx.mlx_array_free(q_scale);
+    const k_scale = bf16Scalar(@sqrt(1.0 / 128.0), s);
+    defer _ = mlx.mlx_array_free(k_scale);
+    const hv_shape = [_]c_int{hv};
+    const A_log = try attn256RandBf16(rnd, &hv_shape, s);
+    defer _ = mlx.mlx_array_free(A_log);
+    const dt_bias = try attn256RandBf16(rnd, &hv_shape, s);
+    defer _ = mlx.mlx_array_free(dt_bias);
+    const qkv = try attn256RandBf16(rnd, &[_]c_int{ 1, 1, c_dim }, s);
+    defer _ = mlx.mlx_array_free(qkv);
+    const z = try attn256RandBf16(rnd, &[_]c_int{ 1, 1, value_dim }, s);
+    defer _ = mlx.mlx_array_free(z);
+    const b_in = try attn256RandBf16Scaled(rnd, &[_]c_int{ 1, 1, hv }, 16.0, s);
+    defer _ = mlx.mlx_array_free(b_in);
+    const a_in = try attn256RandBf16Scaled(rnd, &[_]c_int{ 1, 1, hv }, 16.0, s);
+    defer _ = mlx.mlx_array_free(a_in);
+    const conv_state = try attn256RandBf16(rnd, &[_]c_int{ 1, 3, c_dim }, s);
+    defer _ = mlx.mlx_array_free(conv_state);
+    const ssm_state = try attn256RandBf16(rnd, &[_]c_int{ 1, hv, dv, dk }, s);
+    defer _ = mlx.mlx_array_free(ssm_state);
+    const conv_w = try attn256RandBf16(rnd, &[_]c_int{ c_dim, 4, 1 }, s);
+    defer _ = mlx.mlx_array_free(conv_w);
+    const norm_w = try attn256RandBf16(rnd, &[_]c_int{dv}, s);
+    defer _ = mlx.mlx_array_free(norm_w);
+    const eps_arr = mlx.mlx_array_new_float(1e-6);
+    defer _ = mlx.mlx_array_free(eps_arr);
+    var sg: [1024]f32 = undefined;
+    for (&sg) |*e| e.* = if (rnd.boolean()) 1.0 else -1.0;
+    const signs = mlx.mlx_array_new_data(&sg, &[_]c_int{value_dim}, 1, .float32);
+    defer _ = mlx.mlx_array_free(signs);
+
+    // Composed chain: the three production kernels + the input rotation.
+    const pre = (try gdnPreworkFused(s, .{
+        .qkv = qkv,
+        .qkv_off = 0,
+        .qkv_stride = c_dim,
+        .b = b_in,
+        .b_off = 0,
+        .b_stride = hv,
+        .a = a_in,
+        .a_off = 0,
+        .a_stride = hv,
+        .A_log = A_log,
+        .dt_bias = dt_bias,
+        .conv_state = conv_state,
+        .conv_w = conv_w,
+        .q_scale = q_scale,
+        .k_scale = k_scale,
+        .hk = hk,
+        .hv = hv,
+        .dk = dk,
+        .dv = dv,
+        .seq = 1,
+    })) orelse return error.FusedDeclined;
+    defer _ = mlx.mlx_array_free(pre.q);
+    defer _ = mlx.mlx_array_free(pre.k);
+    defer _ = mlx.mlx_array_free(pre.v);
+    defer _ = mlx.mlx_array_free(pre.conv_state);
+    defer _ = mlx.mlx_array_free(pre.g);
+    defer _ = mlx.mlx_array_free(pre.beta);
+
+    const config = mlx.mlx_fast_metal_kernel_config_new();
+    defer _ = mlx.mlx_fast_metal_kernel_config_free(config);
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &[_]c_int{ 1, 1, hv, dv }, 4, .bfloat16));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &[_]c_int{ 1, hv, dv, dk }, 4, .bfloat16));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 32, dv, hv));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(config, 32, 4, 1));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "InT", .bfloat16));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "StT", .bfloat16));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_dtype(config, "OutT", .bfloat16));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "Dk", dk));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "Dv", dv));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "Hk", hk));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "Hv", hv));
+    const T_scalar = mlx.mlx_array_new_int(1);
+    defer _ = mlx.mlx_array_free(T_scalar);
+    const inputs_arr = [_]mlx.mlx_array{ pre.q, pre.k, pre.v, pre.g, pre.beta, ssm_state, T_scalar };
+    const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
+    defer _ = mlx.mlx_vector_array_free(inputs_vec);
+    var outputs_vec = mlx.mlx_vector_array_new();
+    defer _ = mlx.mlx_vector_array_free(outputs_vec);
+    try mlx.check(mlx.mlx_fast_metal_kernel_apply(&outputs_vec, try getGdnKernel(false), inputs_vec, config, s));
+    var y_ref = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(y_ref);
+    var state_ref = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(state_ref);
+    try mlx.check(mlx.mlx_vector_array_get(&y_ref, outputs_vec, 0));
+    try mlx.check(mlx.mlx_vector_array_get(&state_ref, outputs_vec, 1));
+    const flat_ref = (try gdnNormGateFused(s, y_ref, z, 0, value_dim, norm_w, eps_arr, true, hv, dv, 1, 1)) orelse return error.FusedDeclined;
+    defer _ = mlx.mlx_array_free(flat_ref);
+    const rot_ref = try rht.transform(flat_ref, signs, 1024, false, s);
+    defer _ = mlx.mlx_array_free(rot_ref);
+
+    const got = (try gdn_decode.step(.{ .hk = hk, .hv = hv, .dk = dk, .dv = dv }, .{
+        .qkv = qkv,
+        .z = z,
+        .a = a_in,
+        .b = b_in,
+        .conv_state = conv_state,
+        .ssm_state = ssm_state,
+        .conv_w = conv_w,
+        .A_log = A_log,
+        .dt_bias = dt_bias,
+        .q_scale = q_scale,
+        .k_scale = k_scale,
+        .norm_w = norm_w,
+        .eps = eps_arr,
+        .signs = signs,
+    }, s)) orelse return error.FusedDeclined;
+    defer _ = mlx.mlx_array_free(got.rot);
+    defer _ = mlx.mlx_array_free(got.conv_state);
+    defer _ = mlx.mlx_array_free(got.ssm_state);
+
+    try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(pre.conv_state, got.conv_state, s));
+    try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(state_ref, got.ssm_state, s));
+    try std.testing.expectEqual(@as(f32, 0.0), try attn256MaxDiff(rot_ref, got.rot, s));
+}
+
 test "gdn norm-gate fused: bit-identical to rms_norm + silu(z) * y at decode and prefill widths, z at a folded offset" {
     const s = mlx.gpuStream();
     gdn_prefill_fused_override = true;
@@ -54423,6 +54784,7 @@ test "ownsModuleDecodeState covers every module-owned arch" {
     // clobber, verbatim. The predicate reads a NAMED LIST so it cannot
     // drift from itself; this test pins the list against the struct.
     var t: Transformer = undefined;
+    t.rht = null;
     t.dsv4 = null;
     t.qwen4 = null;
     try testing.expect(!t.ownsModuleDecodeState());
@@ -56431,6 +56793,7 @@ test "qwen4 MTP head KV scheme follows the trunk under kv-quant 8" {
     defer Transformer.mtp_head_kv_quant_override = saved;
     Transformer.mtp_head_kv_quant_override = false;
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.config = .{};
     xfm.config.num_hidden_layers = 4;
     xfm.config.head_dim = 64;
@@ -57118,6 +57481,8 @@ test "qsa history reservation: a reserved prefill allocates its buffers ONCE (#3
     const total: usize = 409_600;
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = ta;
     var entries = [_]SSMCacheEntry{.{ .ssm_state = mlx.mlx_array_new(), .conv_state = mlx.mlx_array_new(), .initialized = false }};
@@ -57157,6 +57522,8 @@ test "qsa key history: capacity-buffer append equals the concatenated reference,
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
 
@@ -57255,6 +57622,8 @@ test "qsa pooled bank: capacity append equals the concat, and the f32 score oper
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.qsa_score_bank_builds = 0;
@@ -57332,6 +57701,8 @@ test "qsa score bank: incremental column append matches a from-scratch rebuild" 
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.qsa_score_bank_builds = 0;
@@ -57386,6 +57757,8 @@ test "qsa pooled rope: one cos/sin build per forward, not one per full-attention
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.config = .{};
@@ -57460,6 +57833,8 @@ test "qsa pooled rope: a mark from another thread is observed by the next lookup
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.config = .{};
@@ -57672,6 +58047,8 @@ test "qsa visibility skip: bit-identical selection where it is an identity, and 
     const s = mlx.gpuStream();
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = testing.allocator;
     t.config = .{};
@@ -59048,6 +59425,7 @@ test "qsa score fused: no bank is built under the fused arm" {
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = testing.allocator;
     xfm.qsa_score_bank_builds = 0;
@@ -59089,6 +59467,7 @@ test "qsa score fused: unsupported indexer geometry falls back to the composed c
     if (mlx.noGpuBackend()) return error.SkipZigTest;
     const s = mlx.gpuStream();
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.s = s;
     xfm.allocator = testing.allocator;
     xfm.qsa_score_bank_builds = 0;
@@ -59434,6 +59813,8 @@ test "qsa history: a restore-shaped re-seed lands AT the reservation, so the app
     const reserve: usize = 8192;
 
     var t: Transformer = undefined;
+
+    t.rht = null;
     t.s = s;
     t.allocator = ta;
     var entries = [_]SSMCacheEntry{.{ .ssm_state = mlx.mlx_array_new(), .conv_state = mlx.mlx_array_new(), .initialized = false }};
@@ -60391,6 +60772,7 @@ test "verify rollback permits in-place KV append and restores its valid prefix" 
     var offset: usize = 8;
     var ctx = ForwardCtx{ .cache = &cache, .moe_seq_offset = &offset, .ssm_entries = null, .capture_hidden = null, .vision_embeddings = null };
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.allocator = allocator;
     xfm.fwd_gen = 0;
     var rollback = try Transformer.VerifyRollback.capture(&xfm, &ctx);
@@ -60489,6 +60871,7 @@ fn verifyRollbackKvCase(config: KVQuantConfig, prefix_len: usize, force_growth: 
     var offset = prefix_len;
     var ctx = ForwardCtx{ .cache = &cache, .moe_seq_offset = &offset, .ssm_entries = null, .capture_hidden = null, .vision_embeddings = null };
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.allocator = allocator;
     xfm.fwd_gen = 0;
     var rollback = try Transformer.VerifyRollback.capture(&xfm, &ctx);
@@ -60598,6 +60981,8 @@ test "qwen4 MTP adopt rejects a negative origin before mutating nonempty state" 
     defer ssmSnapshotDeinit(&aux);
 
     var xfm: Transformer = undefined;
+
+    xfm.rht = null;
     xfm.allocator = allocator;
     xfm.s = mlx.mlx_default_cpu_stream_new();
     defer _ = mlx.mlx_stream_free(xfm.s);
@@ -60962,6 +61347,7 @@ test "MTP coarse pairs preserve row-kernel logits (MTP_LMHEAD_TEST_FILE)" {
 
 test "single-stream verify feature selection excludes prefill and ordinary decoding" {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     var qwen4: qwen4_mod.Qwen4State = undefined;
     const old_features = single_verify_test_features;
     defer single_verify_test_features = old_features;

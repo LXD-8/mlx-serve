@@ -11,6 +11,7 @@ const model_discovery = @import("model_discovery.zig");
 const gguf_meta = @import("gguf_meta.zig");
 const model_registry_mod = @import("model_registry.zig");
 const drafter_mod = @import("drafter.zig");
+const mtp_graft = @import("mtp_graft.zig");
 const mtp_mod = @import("mtp.zig");
 const chat_mod = @import("chat.zig");
 const server_mod = @import("server.zig");
@@ -1459,6 +1460,7 @@ pub fn main(init: std.process.Init) !void {
             try model_mod.loadWeights(io, allocator, model_dir);
         defer weights.deinit();
         model_mod.resolveWeightPrefix(config, &weights);
+        try model_mod.narrowHadamardPackTables(config, &weights, mlx.gpuStream());
 
         var xfm = try transformer_mod.Transformer.init(io, allocator, config.*, &weights);
         defer xfm.deinit();
@@ -1500,6 +1502,7 @@ pub fn main(init: std.process.Init) !void {
         // file or in-checkpoint tensors in the trunk shards).
         var mtp_head: ?mtp_mod.MtpModel = null;
         defer if (mtp_head) |*h| h.deinit();
+        if (enable_mtp) mtp_graft.ensure(allocator, io, model_dir, config);
         if (enable_mtp and mtp_mod.hasMtpHead(io, allocator, model_dir)) {
             // A failed load (e.g. a sidecar layout we can't bind yet) only
             // disables the head — mirrors the serve path's graceful degrade.

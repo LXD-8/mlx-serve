@@ -39,6 +39,7 @@ const generate_mod = @import("generate.zig");
 const rp_mod = @import("reasoning_protocol.zig");
 const gen_mod = @import("gen.zig");
 const drafter_mod = @import("drafter.zig");
+const mtp_graft = @import("mtp_graft.zig");
 const mtp_mod = @import("mtp.zig");
 const ane_mod = @import("ane.zig");
 const diffusion_mod = @import("diffusion.zig");
@@ -3535,6 +3536,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
         try model_mod.loadWeights(sch.io, sch.allocator, params.model_dir);
     errdefer weights_ptr.deinit();
     model_mod.resolveWeightPrefix(params.config, weights_ptr);
+    try model_mod.narrowHadamardPackTables(params.config, weights_ptr, mlx.gpuStream());
 
     // Transformer — owns the bulk of the GPU memory.
     const xfm_ptr = try sch.allocator.create(Transformer);
@@ -3911,6 +3913,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
     // bind only disables the head — the model still serves.
     var mtp_ptr: ?*mtp_mod.MtpModel = null;
     var mtp_cost_profile: mtp_mod.MtpCostProfile = .generic;
+    if (mtp_enabled) mtp_graft.ensure(sch.allocator, sch.io, params.model_dir, params.config);
     if (mtp_enabled and mtp_mod.hasMtpHead(sch.io, sch.allocator, params.model_dir)) {
         if (sch.allocator.create(mtp_mod.MtpModel)) |h| {
             if (mtp_mod.loadMtp(sch.io, sch.allocator, mlx.gpuStream(), params.model_dir)) |loaded| {
@@ -3928,7 +3931,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
                     // carries it, so this is paid once per (chip, model,
                     // quant, OS build) like the ladder itself.
                     log.info("MTP head ready (depth={d}, profile={s}).\n", .{
-                        generate_mod.Generator.resolveMtpDepthCapForProfile(params.mtp_depth, mtp_cost_profile),
+                        generate_mod.Generator.resolveMtpDepthCapForProfile(params.config.mtpDepth(params.mtp_depth), mtp_cost_profile),
                         @tagName(mtp_cost_profile),
                     });
                 } else |bind_err| {
@@ -4053,8 +4056,9 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
         null;
     // Resolve the auto (0) cap here so every downstream reader of
     // `lm.mtp_depth` (server log lines, slot params) sees the real value.
-    entry.mtp_depth = generate_mod.Generator.resolveMtpDepthCapForProfile(params.mtp_depth, mtp_cost_profile);
-    xfm_ptr.mtp_depth_free = generate_mod.Generator.mtpDepthCapFree(params.mtp_depth);
+    const mtp_depth_cfg = params.config.mtpDepth(params.mtp_depth);
+    entry.mtp_depth = generate_mod.Generator.resolveMtpDepthCapForProfile(mtp_depth_cfg, mtp_cost_profile);
+    xfm_ptr.mtp_depth_free = generate_mod.Generator.mtpDepthCapFree(mtp_depth_cfg);
     // A MERGED drafter has no `--drafter` to echo, so the reported path comes
     // from what was actually resolved — `drafter_loaded` and `drafter_path`
     // must not disagree about the same sidecar.
@@ -9559,6 +9563,7 @@ test "retained position: a padded row can never take the full-accept arm" {
 
 test "single MTP slot reaches the round entry through runDecodeTick" {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     var model: model_registry_mod.LoadedModel = undefined;
     model.transformer = null;
     var gen: Generator = undefined;
@@ -9633,6 +9638,7 @@ test "group cost geometry rejects partial rounds and keeps complete cache format
 
 test "scheduler prices each shared execution once and preserves row sampling geometry" {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.round_cost = .{ .layout = .long };
     xfm.mtp_group_cost = .{};
     var model: LoadedModel = undefined;
@@ -9668,6 +9674,7 @@ test "scheduler prices each shared execution once and preserves row sampling geo
 
 test "planner pools recurring head histories without mixing the cold first history" {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.round_cost = .{ .layout = .long };
     xfm.mtp_group_cost = .{};
     var model: LoadedModel = undefined;
@@ -9725,6 +9732,7 @@ test "planner pools recurring head histories without mixing the cold first histo
 
 test "mean cost pooling retains differences between histories and both worst-case bounds" {
     var xfm: Transformer = undefined;
+    xfm.rht = null;
     xfm.round_cost = .{ .layout = .long };
     xfm.mtp_group_cost = .{};
     var model: LoadedModel = undefined;

@@ -142,6 +142,8 @@ pub const ModelConfig = struct {
     rms_norm_eps: f32 = 1e-6,
     /// K2-Horizon: every RMS norm normalizes `hidden_size / norm_groups`-wide channel groups on their own rms, then applies the full weight.
     norm_groups: u32 = 1,
+    /// Prism Hadamard packs: every `<linear>.signs` weight reads `H_block(signs * x)` (rht.zig); 0 = none.
+    hadamard_block: u32 = 0,
 
     // RoPE
     rope_theta: f32 = 1000000.0,
@@ -864,6 +866,13 @@ pub const ModelConfig = struct {
             @as(u64, self.linear_num_value_heads) * self.linear_value_head_dim;
         const conv: u64 = @as(u64, self.linear_conv_kernel_dim) -| 1;
         return linear_layers * (state + conv * conv_dim * 2);
+    }
+
+    /// Configured MTP depth (0 = auto). Hadamard packs run a grafted head that
+    /// over-speculates in auto mode; 2 measured best (code 71 vs 58 tok/s).
+    pub fn mtpDepth(self: *const ModelConfig, configured: u32) u32 {
+        if (configured == 0 and self.hadamard_block > 0) return 2;
+        return configured;
     }
 
     pub fn isMoe(self: *const ModelConfig) bool {
@@ -1609,6 +1618,19 @@ pub fn qwen4PleInstalledAt(has_ple: []const bool, ple_layer_idx: i32) bool {
 /// qwen4_exp arms (same `vision_config` keys, `rope_parameters.mrope_*`,
 /// vision token ids). The generic vision_config block already set
 /// `has_vision`; this reads Qwen's own keys into `qv_*`.
+/// One block for every packed module; mixed blocks are not a layout we serve.
+fn prismHadamardBlock(root: std.json.ObjectMap) !u32 {
+    const modules = (root.get("modules") orelse return error.UnsupportedHadamardLayout).array.items;
+    var block: i64 = 0;
+    for (modules) |m| {
+        const b = (m.object.get("block") orelse return error.UnsupportedHadamardLayout).integer;
+        if (b <= 0 or (block != 0 and b != block)) return error.UnsupportedHadamardLayout;
+        block = b;
+    }
+    if (block == 0) return error.UnsupportedHadamardLayout;
+    return @intCast(block);
+}
+
 fn parseQwenVisionFields(config: *ModelConfig, root: std.json.ObjectMap, cfg_obj: std.json.ObjectMap) void {
     if (root.get("vision_config")) |vc_val| {
         if (vc_val == .object) {
@@ -2395,9 +2417,11 @@ pub fn parseConfigFromJson(allocator: std.mem.Allocator, content: []const u8) !M
     } else if (std.mem.eql(u8, model_type, "qwen3_5_moe") or
         std.mem.eql(u8, model_type, "qwen3_5") or
         std.mem.eql(u8, model_type, "qwen3_5_moe_text") or
-        std.mem.eql(u8, model_type, "qwen3_5_text"))
+        std.mem.eql(u8, model_type, "qwen3_5_text") or
+        std.mem.eql(u8, model_type, "prism_hadamard_qwen35"))
     {
         config.model_type = "qwen3_5_moe";
+        if (std.mem.eql(u8, model_type, "prism_hadamard_qwen35")) config.hadamard_block = try prismHadamardBlock(root);
         config.weight_prefix = "language_model.model";
         config.norm_has_offset = false;
         config.scale_embeddings = false;
@@ -3573,6 +3597,23 @@ fn hasWeightsUnder(weights: *const Weights, prefix: []const u8) bool {
 /// that already loaded binds byte-identically. Scan order puts the most
 /// specific spelling first: a `model.language_model.*` checkpoint also
 /// satisfies the bare "model" probe.
+/// Prism Hadamard packs ship every unpacked tensor f32 (norms, A_log, dt_bias,
+/// the dense GDN a/b rows, conv): the 1-D ones widen the bf16 residual at layer 0,
+/// the rest double their bytes. Sign vectors stay f32: the rotation runs in f32.
+pub fn narrowHadamardPackTables(config: *const ModelConfig, weights: *Weights, s: mlx.mlx_stream) !void {
+    if (config.hadamard_block == 0) return;
+    var it = weights.map.iterator();
+    while (it.next()) |kv| {
+        const v = kv.value_ptr.*;
+        if (mlx.mlx_array_dtype(v) != .float32) continue;
+        if (std.mem.endsWith(u8, kv.key_ptr.*, ".signs")) continue;
+        var cast = mlx.mlx_array_new();
+        try mlx.check(mlx.mlx_astype(&cast, v, .bfloat16, s));
+        _ = mlx.mlx_array_free(v);
+        kv.value_ptr.* = cast;
+    }
+}
+
 pub fn resolveWeightPrefix(config: *ModelConfig, weights: *const Weights) void {
     const candidates = [_][]const u8{ NESTED_PREFIX, VL_NESTED_PREFIX, FLAT_PREFIX };
     var known = false;
@@ -5680,6 +5721,25 @@ test "parseConfig prefers processor_config and fills missing Qwen bounds from pr
     try testing.expect(config.qwen_vision);
     try testing.expectEqual(@as(u32, 65536), config.qv_min_pixels);
     try testing.expectEqual(@as(u32, 16777216), config.qv_max_pixels);
+}
+
+test "ModelConfig prism_hadamard_qwen35 is qwen3_5 with the module Hadamard block" {
+    const json =
+        \\{
+        \\  "model_type": "prism_hadamard_qwen35",
+        \\  "text_config": {"model_type": "qwen3_5_text", "hidden_size": 5120, "num_hidden_layers": 64},
+        \\  "modules": [{"path": "lm_head", "block": 1024}, {"path": "model.layers.0.mlp.up_proj", "block": 1024}],
+        \\  "quantization": {"bits": 2, "group_size": 128, "mode": "affine"}
+        \\}
+    ;
+    const config = try parseConfigFromJson(testing.allocator, json);
+    try testing.expectEqualStrings("qwen3_5_moe", config.model_type);
+    try testing.expectEqual(@as(u32, 1024), config.hadamard_block);
+    const mixed =
+        \\{"model_type": "prism_hadamard_qwen35", "text_config": {"hidden_size": 5120},
+        \\ "modules": [{"path": "a", "block": 1024}, {"path": "b", "block": 512}]}
+    ;
+    try testing.expectError(error.UnsupportedHadamardLayout, parseConfigFromJson(testing.allocator, mixed));
 }
 
 test "ModelConfig text-only qwen3_5 has no qwen_vision" {

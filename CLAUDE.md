@@ -67,6 +67,7 @@ Zig 0.17 (pinned nightly via `scripts/fetch-zig.sh`; brew 0.16 no longer builds)
 | `model_discovery.zig` / `model_registry.zig` | Discovery (two-level org/name, multi-root, GGUF classification, stub meta), multi-model registry |
 | `arch/ds4.zig` / `arch/llama.zig` (+ `*_ffi.zig`, `lib/llama_shim`) | Embedded-engine bridges |
 | `ane.zig` + `lib/ane/` | ANE prefill offload (`--ane-prefill`, opt-in, LOSSY int8/fp16, M4-and-below): SwiGLU-MLP + fused GDN in-proj MIL programs on the private AppleNeuralEngine framework (`msv_ane_*`, attribution in NOTICE), `/props` `"ane"` + `mlx_serve:ane_*`. Rules: `docs/reference.md` "ANE prefill rules" |
+| `rht.zig` | Prism Hadamard packs (`prism_hadamard_qwen35`): `<linear>.signs` bound to weight handles, `qmatmul` reads `H_block(signs*x)`, the embedding gather gets the inverse; f32 1-D tables narrowed at load (`narrowHadamardPackTables`) |
 | `lora.zig` | Runtime unfused STACKED LoRA (8 max, summed never merged) across QLinear/MixedLinear/MfLinear |
 | `status.zig` / `log.zig` | TUI status bar; leveled logging + file sink (`~/.mlx-serve/logs/mlx-serve-<port>.log`, 32 MB rotation) |
 | `format_corpus_test.zig` / `tool_traffic_replay_test.zig` | Hermetic format corpus + real-traffic replay (`src/fixtures/tool_traffic.jsonl`) |
@@ -124,6 +125,7 @@ Dispatch on `config.json` `model_type`. GGUF bypasses MLX → embedded engine by
 | `gemma3`, `gemma3_text` | + flat text-only sibling; EmbeddingGemma encoder when `use_bidirectional_attention` |
 | `qwen3` | QK norm |
 | `qwen3_5`, `qwen3_5_moe(_text)` | GatedDeltaNet + optional MoE, shared expert; Qwen3-VL vision. Qwen3.8 packs serve on this arch |
+| `prism_hadamard_qwen35` | prism-ml Bonsai 2 = qwen3_5 behind block-1024 Hadamard rotations (`rht.zig`, `hadamard_block` from `modules[].block`); fused QKV declines |
 | `qwen3_next` | DeltaNet |
 | `nemotron_h` | Hybrid transformer + Mamba2 (`backbone` prefix) |
 | `lfm2`, `lfm2_moe`, `lfm2_vl` | Hybrid gated conv + attention; `lfm2_moe` = sparse MoE past `num_dense_layers` (sigmoid routing, selection-only `expert_bias`, no shared expert); dense MLP `w1/w3/w2` OR `gate/up/down_proj` (probed); `lfm2_vl` = siglip2 tower + projector, NaFlex 64-256 merged tokens, tiling past `max_image_tokens x 2.0` into 512px tiles + thumbnail (`<|img_row_R_col_C|>`/`<|img_thumbnail|>`) |

@@ -7737,6 +7737,28 @@ fn effortWordOnly(allocator: std.mem.Allocator, lm: *LoadedModel, tok: *const To
     return chat_mod.templateConsumesEffort(cc.chat_template) and !thinkMarkersAtomic(allocator, lm, tok);
 }
 
+/// A request that thinks without naming an effort renders as "low" on the
+/// Qwen3.8 family (`chat.qwen38EffortFor`), so it gets low's budget too; the
+/// "keep it brief" preamble alone does not stop a model (a pi turn on a 2-bit
+/// Bonsai thought for 6k tokens). `--reasoning-budget` still wins.
+fn implicitEffortBudget(template: []const u8, markers_atomic: bool, default_budget: i32) i32 {
+    if (default_budget >= 0 or !markers_atomic or !chat_mod.isQwen38EffortTemplate(template)) return default_budget;
+    return responses_mod.effortBudget("low", default_budget);
+}
+
+fn implicitEffortBudgetFor(allocator: std.mem.Allocator, lm: *LoadedModel, tok: *const Tokenizer) i32 {
+    const cc = lm.chat_config orelse return server_config.default_reasoning_budget;
+    return implicitEffortBudget(cc.chat_template, thinkMarkersAtomic(allocator, lm, tok), server_config.default_reasoning_budget);
+}
+
+test "implicitEffortBudget: silence on the Qwen3.8 family gets low's budget" {
+    const qwen38 = "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}";
+    try std.testing.expectEqual(@as(i32, 2048), implicitEffortBudget(qwen38, true, -1));
+    try std.testing.expectEqual(@as(i32, 512), implicitEffortBudget(qwen38, true, 512)); // --reasoning-budget wins
+    try std.testing.expectEqual(@as(i32, -1), implicitEffortBudget(qwen38, false, -1)); // no bound to arm
+    try std.testing.expectEqual(@as(i32, -1), implicitEffortBudget("{{ reasoning_effort }}", true, -1));
+}
+
 fn parseReasoningEffort(root: std.json.ObjectMap, default_budget: i32, template_consumes_effort: bool) ?ReasoningEffort {
     const v = root.get("reasoning_effort") orelse return null;
     if (v != .string) return null;
@@ -8408,7 +8430,7 @@ fn handleChatCompletions(
 
     // Reasoning budget (max tokens in <think> block, -1 = unlimited):
     // explicit reasoning_budget_tokens > effort-mapped budget > --reasoning-budget flag
-    const effort_budget: i32 = if (effort_cfg) |e| e.budget else server_config.default_reasoning_budget;
+    const effort_budget: i32 = if (effort_cfg) |e| e.budget else implicitEffortBudgetFor(allocator, lm, tok);
     const reasoning_budget: i32 = if (root.get("reasoning_budget_tokens")) |v| switch (v) {
         .integer => |i| clampJsonI32(i),
         else => effort_budget,
@@ -15261,7 +15283,7 @@ fn handleAnthropicMessages(
         effort_word = cfg.effort;
         if (!budget_explicit) reasoning_budget = cfg.budget;
         enable_thinking = if (root.get("thinking") == null) cfg.enable else (enable_thinking or cfg.enable);
-    }
+    } else if (!budget_explicit) reasoning_budget = implicitEffortBudgetFor(allocator, lm, tok);
     const is_stream = if (root.get("stream")) |v| v == .bool and v.bool else false;
     const model_name = if (root.get("model")) |v| (if (v == .string) v.string else config.model_type) else config.model_type;
 
