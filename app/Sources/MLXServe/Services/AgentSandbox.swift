@@ -1070,7 +1070,7 @@ final class AgentSandbox: ObservableObject, @unchecked Sendable {
                         Thread.sleep(forTimeInterval: 0.1)
                     }
                     guard self.sshMirrorActive(port: sshPort) else {
-                        throw SandboxError(message: "the guest network never came up — no ssh mirror on localhost:\(sshPort)")
+                        throw SandboxError(message: L10n.format("the guest network never came up — no ssh mirror on localhost:%lld", Int(sshPort)))
                     }
 
                     let label = agent?.displayName ?? "shell"
@@ -1404,7 +1404,7 @@ final class AgentSandbox: ObservableObject, @unchecked Sendable {
                 NSLog("[sandbox] \(msg)")
             }
         } catch {
-            throw SandboxError(message: "could not pull the sandbox base image \"\(image)\" (\(Self.guestArch)): \(error.localizedDescription)")
+            throw SandboxError(message: L10n.format("could not pull the sandbox base image \"%@\" (%@): %@", image, Self.guestArch, error.localizedDescription))
         }
         fm.createFile(atPath: marker.path, contents: Data())
         return dir.path
