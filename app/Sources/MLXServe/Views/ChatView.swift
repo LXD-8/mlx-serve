@@ -2746,17 +2746,18 @@ struct ChatDetailView: View {
                         }
                     }
                 } else if videoSupported, provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-                    // Decode inside the closure — the temp URL is only valid here.
+                    // The temp URL is only valid inside the closure and frame
+                    // extraction is async, so decode from a copy we own.
                     provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
                         guard let url = url else { return }
-                        let name = url.lastPathComponent
-                        let frames = VideoPreprocessor.extractFrames(url: url)
+                        let copy = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
+                        guard (try? FileManager.default.copyItem(at: url, to: copy)) != nil else {
+                            DispatchQueue.main.async { showVideoError(url.lastPathComponent) }
+                            return
+                        }
                         DispatchQueue.main.async {
-                            if let frames, !frames.isEmpty {
-                                pendingVideos.append(ChatVideo(name: name, frames: frames))
-                            } else {
-                                showVideoError(name)
-                            }
+                            addVideoAttachment(copy, name: url.lastPathComponent, removeAfter: true)
                         }
                     }
                 } else if let imageType = provider.registeredTypeIdentifiers.first(where: {
@@ -3280,11 +3281,12 @@ struct ChatDetailView: View {
 
     /// Extract frames from a video file (off the main thread — AVFoundation
     /// decode can be slow) and add it as a pending attachment.
-    private func addVideoAttachment(_ url: URL) {
-        let name = url.lastPathComponent
-        DispatchQueue.global(qos: .userInitiated).async {
-            let frames = VideoPreprocessor.extractFrames(url: url)
-            DispatchQueue.main.async {
+    private func addVideoAttachment(_ url: URL, name: String? = nil, removeAfter: Bool = false) {
+        let name = name ?? url.lastPathComponent
+        Task.detached(priority: .userInitiated) {
+            let frames = await VideoPreprocessor.extractFrames(url: url)
+            if removeAfter { try? FileManager.default.removeItem(at: url) }
+            await MainActor.run {
                 if let frames, !frames.isEmpty {
                     pendingVideos.append(ChatVideo(name: name, frames: frames))
                 } else {

@@ -529,7 +529,7 @@ class ServerManager: ObservableObject {
         source.setEventHandler { [weak self] in
             guard let self else { source.cancel(); return }
             let url = healthURL
-            URLSession.shared.dataTask(with: url) { data, response, error in
+            URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                       let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       json["status"] as? String == "ok" else { return }

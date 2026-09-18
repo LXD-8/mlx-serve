@@ -97,9 +97,18 @@ jobs:
       - name: Run Zig tests
         run: zig build test --summary all
 
+      # Dependencies (NIO, MCP, SwiftTerm, SwaTex) are most of a cold Swift
+      # build and only change with Package.resolved. Our own sources get fresh
+      # mtimes from checkout, so MLXCore always recompiles.
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: app/.build
+          key: swiftpm-ci-${{ hashFiles('app/Package.resolved', 'scripts/patch-swatex-font-lookup.sh') }}-${{ steps.mlxpin.outputs.xcode }}
+
       # Do not force one Swift language mode through the dependency graph.
       # Each package's manifest owns its mode (SwaTex requires Swift 6.1).
-      # `swift test` builds the app target too; the release build is release.yml's.
+      # Debug build only; the release build is release.yml's.
       - name: Build and test Swift app
         working-directory: app
         run: |
@@ -107,4 +116,5 @@ jobs:
           # time (issue #233). Mirrors app/build.sh.
           swift package resolve
           bash ../scripts/patch-swatex-font-lookup.sh .build/checkouts/SwaTex
-          swift test
+          swift build --build-tests
+          bash test.sh
