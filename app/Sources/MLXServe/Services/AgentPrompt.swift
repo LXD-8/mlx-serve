@@ -249,7 +249,7 @@ enum AgentPrompt {
         let done = NSAlert()
         done.messageText = L10n.text("System prompt updated")
         done.informativeText = backup.map { L10n.format("Updated to the latest default.\nYour previous prompt was saved to:\n%@", $0) }
-            ?? "Updated to the latest default."
+            ?? L10n.text("Updated to the latest default.")
         if backup != nil {
             done.addButton(withTitle: L10n.text("Reveal Backup"))
             done.addButton(withTitle: L10n.text("OK"))

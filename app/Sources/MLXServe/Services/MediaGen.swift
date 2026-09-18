@@ -88,12 +88,12 @@ struct ResolutionGrid: Hashable {
             return .invalid(message: L10n.text("Width and height must be whole numbers above zero."))
         }
         for v in [width, height] where v < minDim || v > maxDim {
-            return .invalid(message: L10n.format("This model samples between %lld and %lld px per side. %lld is outside that.", minDim, maxDim, v))
+            return .invalid(message: L10n.formatUngrouped("This model samples between %lld and %lld px per side. %lld is outside that.", minDim, maxDim, v))
         }
         let w = snap(width), h = snap(height)
         guard w != width || h != height else { return .ok(width: width, height: height) }
         return .corrected(width: w, height: h,
-                          note: L10n.format("Rounded to %lld × %lld — this model samples in steps of %lld px.", w, h, alignment))
+                          note: L10n.formatUngrouped("Rounded to %lld × %lld — this model samples in steps of %lld px.", w, h, alignment))
     }
 }
 
