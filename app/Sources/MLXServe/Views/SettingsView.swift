@@ -2247,6 +2247,7 @@ private struct InterfaceSectionContent: View {
     @EnvironmentObject var appState: AppState
     @AppStorage(InterfacePrefKey.appearanceMode) private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @AppStorage(InterfacePrefKey.accentColor) private var accentColorRaw = AppAccentColor.system.rawValue
+    @AppStorage(InterfacePrefKey.language) private var languageRaw = AppLanguage.system.rawValue
     @AppStorage(InterfacePrefKey.textSize) private var textSizeRaw = ChatTextSize.medium.rawValue
     @AppStorage(InterfacePrefKey.chatColumn) private var chatColumnRaw = ChatColumnWidth.wide.rawValue
     @AppStorage(InterfacePrefKey.compactMode) private var compactMode = false
@@ -2254,6 +2255,28 @@ private struct InterfaceSectionContent: View {
     @AppStorage(InterfacePrefKey.terminalBackground) private var terminalBackgroundHex = ""
 
     var body: some View {
+        SettingsRow(title: "Language",
+                    explainer: "The app's own language. System follows macOS — including the per-app language in System Settings ▸ General ▸ Language & Region.") {
+            Picker("", selection: $languageRaw) {
+                ForEach(AppLanguage.allCases) { language in
+                    // A language names itself, so "English" and "简体中文" are
+                    // NOT looked up: they read the same in every UI language.
+                    if language == .system {
+                        Text(L10n.text(language.label)).tag(language.rawValue)
+                    } else {
+                        Text(verbatim: language.label).tag(language.rawValue)
+                    }
+                }
+            }
+            .labelsHidden()
+            .frame(width: 160)
+            .onChange(of: languageRaw) { _, _ in
+                // Both paths again, here rather than only in `AppChrome`: the
+                // picker's own change is the instant the user is looking for,
+                // and the modifier's `onChange` rides the same value.
+                BundleLanguageOverride.apply(AppLanguage(rawValue: languageRaw) ?? .system)
+            }
+        }
         SettingsRow(title: "Appearance", explainer: "Follow the system setting, or force light/dark for this app only.") {
             Picker("", selection: $appearanceModeRaw) {
                 ForEach(AppAppearanceMode.allCases) { mode in
