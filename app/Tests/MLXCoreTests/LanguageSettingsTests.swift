@@ -100,4 +100,21 @@ final class LanguageSettingsTests: XCTestCase {
         XCTAssertEqual(BundleLanguageOverride.languageBundle?.bundlePath, first?.bundlePath)
         BundleLanguageOverride.apply(.system)
     }
+
+    /// The row writes through `select`, so the choice is both resolved and
+    /// recorded; the order matters because the write is what re-renders.
+    func testSelectResolvesTheBundleAndRecordsTheChoice() throws {
+        let suite = "LanguageSettingsTests.select"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+
+        AppLanguage.select(.simplifiedChinese, into: defaults, in: Self.resourcesBundle)
+        XCTAssertNotNil(BundleLanguageOverride.languageBundle)
+        XCTAssertEqual(defaults.string(forKey: InterfacePrefKey.language), "zh-Hans")
+
+        AppLanguage.select(.system, into: defaults, in: Self.resourcesBundle)
+        XCTAssertNil(BundleLanguageOverride.languageBundle)
+        XCTAssertEqual(defaults.string(forKey: InterfacePrefKey.language), "system")
+        defaults.removePersistentDomain(forName: suite)
+    }
 }

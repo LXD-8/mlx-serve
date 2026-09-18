@@ -43,6 +43,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     static var current: AppLanguage {
         AppLanguage(rawValue: UserDefaults.standard.string(forKey: InterfacePrefKey.language) ?? "") ?? .system
     }
+
+    /// Applies `language` and then records the choice, in that order.
+    ///
+    /// The write is what re-renders the surface that shows the new language, and
+    /// the `L10n` lookups run inside that render — so the bundle has to be
+    /// swapped before it, not after, or the strings built on the way through
+    /// stay in the language the user just left.
+    static func select(_ language: AppLanguage, into defaults: UserDefaults = .standard, in host: Bundle = .main) {
+        BundleLanguageOverride.apply(language, in: host)
+        defaults.set(language.rawValue, forKey: InterfacePrefKey.language)
+    }
 }
 
 /// Points `Bundle.main` string lookups at one `.lproj`.
