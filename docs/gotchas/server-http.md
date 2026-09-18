@@ -2200,3 +2200,16 @@ Fix: `server.encodeText` owns the branch (ds4 vocab, llama.cpp vocab, else BPE) 
 sites call it. Live on ds4 / llama.cpp / MLX: 196 / 590 / 67 reasoning tokens.
 
 Guard: the format matrix's `usage reasoning_tokens > 0` check on a GGUF arm.
+
+## Logprobs in the logits dtype; Responses dropped the budget (2026-09-18)
+
+- `computeLogprobs` ran `log(softmax(x))` in the logits dtype: bf16 rounded
+  every probability before the log (logprobs off by up to ~0.06 at -16), and
+  f16 logits underflowed to `-inf` plus a NaN, which is invalid JSON on
+  `/v1/completions`. Now `logits - logsumexp` in f32. Guard: unit test
+  `computeLogprobs: f16 logits keep finite, exact log-probabilities`.
+- `/v1/responses` parsed `reasoning.effort` and discarded the budget, so a
+  capped effort thought until `max_output_tokens` and ended `incomplete`. It
+  now takes chat's precedence (`reasoning_budget_tokens` > effort word >
+  `--reasoning-budget`, Qwen3.8 implicit low) and arms the decode-time bound.
+  Guard: `tests/test_reasoning_budget_stream.sh` (responses cases).

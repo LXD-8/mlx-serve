@@ -3427,7 +3427,7 @@ pub fn prefillTransientReserveAtKv(
         config.prefillAttnKeys(seq),
         prefillStreamBytesPerToken(config),
         prefillDequantWeightBytes(config),
-        .{ .qsa_ring_bytes = config.qsaRingBytes() },
+        .{ .qsa_ring_bytes = config.qsaRingBytes(), .dq_min_rows = transformer_mod.prefillDqGemmMinRows(config.quant_bits) },
     ) + qsaMaskBytes(config, @min(chunk, @max(seq, 1)), seq);
 }
 
@@ -5076,6 +5076,8 @@ pub const PrefillRequestTerms = struct {
     grow_coexist_bytes: u64 = 0,
     qsa_ring_bytes: u64 = 0,
     mtp_head_kv_bytes: u64 = 0,
+    /// Forward width from which the dequant+GEMM route fires (`prefillDqGemmMinRows`).
+    dq_min_rows: u64 = transformer_mod.PREFILL_DQ_GEMM_MIN_M,
 };
 
 pub fn prefillMemoryNeeded(seq: u64, heads: u64, kv_heads: u64, kv_per_tok: u64, hdim: u64, score_hdim: u64, hidden: u64, ffn: u64, kv_bits: u64, chunk: u64, attn_keys: u64, stream_per_tok: u64, dequant_weights: u64, req: PrefillRequestTerms) u64 {
@@ -5102,7 +5104,7 @@ pub fn prefillMemoryNeeded(seq: u64, heads: u64, kv_heads: u64, kv_per_tok: u64,
     // (MLX_SERVE_PREFILL_DQ_GEMM=0): +0.51 GB on the qwen3_5 27B at chunk
     // 2048, +0.17-0.21 on the lfm2 2.6B, ~0 at chunk 8192 where the envelope
     // already dominates.
-    const dq_weights: u64 = if (fwd >= transformer_mod.PREFILL_DQ_GEMM_MIN_M) dequant_weights else 0;
+    const dq_weights: u64 = if (fwd >= req.dq_min_rows) dequant_weights else 0;
     const gross: u64 = kv_bytes + req.reserved_kv_bytes + req.state_bytes + req.checkpoint_bytes +
         req.grow_coexist_bytes + req.qsa_ring_bytes + req.mtp_head_kv_bytes + scores + dequant + envelope + dq_weights + PREFILL_RUNTIME_FLOOR_BYTES;
     // The one place a warm turn's resident rows leave the bill, inside the 5/4.
@@ -5296,7 +5298,8 @@ pub fn prefillRequestTerms(config: *const model_mod.ModelConfig, seq: u64, max_t
     // Arch gate for every term (all new, all measured on qwen4_exp alone; the reservation's
     // allocator twin is gated too, so an ungated guard billed memory never reserved). `.{}` is
     // the identity: `prefillMemoryNeeded` then reduces to the previous expression.
-    if (!config.longCtxGated()) return .{};
+    const dq_min_rows: u64 = transformer_mod.prefillDqGemmMinRows(config.quant_bits);
+    if (!config.longCtxGated()) return .{ .dq_min_rows = dq_min_rows };
     // `reservedTokens` returns 0 below its length threshold; floor the reserved length at `seq`.
     const reserved = @max(reservedCacheTokens(seq, max_tokens, chunk, getEffectiveContextLength(config)), seq);
     // Only the headroom is new here: the prompt's own rows are already billed.
@@ -5317,6 +5320,7 @@ pub fn prefillRequestTerms(config: *const model_mod.ModelConfig, seq: u64, max_t
         .grow_coexist_bytes = growCoexistBytes(config, warm, seq, kv_per_tok),
         .qsa_ring_bytes = config.qsaRingBytes() +| head_qsa_ring,
         .mtp_head_kv_bytes = reserved *| head_per_tok,
+        .dq_min_rows = dq_min_rows,
     };
 }
 
@@ -17020,12 +17024,19 @@ fn handleResponsesInner(
     };
 
     // ── reasoning ──
-    // reasoning.budget is parsed but not enforced post-generation in this MVP
-    // pass; thinking truncation happens via finish_reason="length" if the model
-    // overruns max_output_tokens.
+    // Budget precedence as on chat: explicit reasoning_budget_tokens > the
+    // effort word's budget (`reasoningEffortFromWord`) > --reasoning-budget,
+    // with the Qwen3.8 implicit-low budget when thinking names no effort.
     const reasoning_cfg = responses_mod.parseReasoning(root.get("reasoning"), server_config.default_reasoning_budget);
     var enable_thinking = reasoning_cfg.enable;
-    _ = reasoning_cfg.budget;
+    const effort_budget: i32 = if (reasoning_cfg.effort) |word|
+        reasoningEffortFromWord(word, server_config.default_reasoning_budget, effortWordOnly(allocator, lm, tok)).budget
+    else
+        implicitEffortBudgetFor(allocator, lm, tok);
+    const reasoning_budget: i32 = if (root.get("reasoning_budget_tokens")) |v| switch (v) {
+        .integer => |i| clampJsonI32(i),
+        else => effort_budget,
+    } else effort_budget;
 
     // ── tools ──
     var tools_json: ?[]const u8 = null;
@@ -17131,7 +17142,7 @@ fn handleResponsesInner(
         grammar_schema_val != null,
         active_has_tools,
         enable_thinking,
-        false, // Responses parses reasoning.budget but does not enforce it.
+        reasoning_budget >= 0,
         schema_proto_active,
     )) {
         .deferred => {},
@@ -17246,6 +17257,12 @@ fn handleResponsesInner(
             }
         }
     }
+
+    // The budget is enforced at decode: the server closes the thought, so this
+    // surface parses a closed block like any other.
+    var think_bound = armThinkBound(allocator, lm, tok, prompt_ids, enable_thinking, reasoning_budget);
+    defer if (think_bound) |tb| allocator.free(tb.forced);
+    if (think_bound) |*tb| sampling.think_bound = tb;
 
     // ── pre-allocate response id (used in streaming envelopes too) ──
     const resp_id = try responses_mod.makeId(stream.io, allocator, "resp");

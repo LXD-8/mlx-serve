@@ -12843,19 +12843,17 @@ fn firstTokenLogprobs(allocator: std.mem.Allocator, logits: mlx.mlx_array, chose
 /// saturation above is everywhere: rank 1 was measured to be the chosen token
 /// in 0 of 5 positions on a trivial greedy prompt.
 fn computeLogprobs(allocator: std.mem.Allocator, logits: mlx.mlx_array, chosen_token: u32, top_n: u32, s: mlx.mlx_stream) !LogprobResult {
-    // Compute log_softmax = log(softmax(logits)) on GPU
-    var probs = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(probs);
-    try mlx.check(mlx.mlx_softmax_axis(&probs, logits, -1, true, s));
-
-    var log_probs_raw = mlx.mlx_array_new();
-    defer _ = mlx.mlx_array_free(log_probs_raw);
-    try mlx.check(mlx.mlx_log(&log_probs_raw, probs, s));
-
-    // Cast to float32 for CPU readback (model may produce float16 logits)
+    // log_softmax in f32: `log(softmax(x))` in the logits dtype rounds every
+    // probability to bf16/f16 before the log, and f16 underflows to -inf.
+    var logits32 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(logits32);
+    try mlx.check(mlx.mlx_astype(&logits32, logits, .float32, s));
+    var lse = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(lse);
+    try mlx.check(mlx.mlx_logsumexp_axis(&lse, logits32, -1, true, s));
     var log_probs = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(log_probs);
-    try mlx.check(mlx.mlx_astype(&log_probs, log_probs_raw, .float32, s));
+    try mlx.check(mlx.mlx_subtract(&log_probs, logits32, lse, s));
 
     const lp_shape = mlx.getShape(log_probs);
     const rank = lp_shape.len;
@@ -17218,6 +17216,23 @@ test "computeLogprobs: rank 1 is the argmax and ranks descend, under a tie-satur
     try testing.expect(r.top_logprobs[1].token_id != r.top_logprobs[2].token_id);
     // The chosen token's own logprob must agree with its rank-1 entry.
     try testing.expectApproxEqAbs(r.top_logprobs[0].logprob, r.token_logprob, 1e-6);
+}
+
+test "computeLogprobs: f16 logits keep finite, exact log-probabilities" {
+    // p(token 1) = e^-25 underflows f16, so log(softmax) in the logits dtype read -inf.
+    const s = mlx.mlx_default_cpu_stream_new();
+    defer _ = mlx.mlx_stream_free(s);
+    const raw = [_]f32{ 0.0, -20.0, -30.0, 5.0 };
+    const a32 = mlx.mlx_array_new_data(&raw, &[_]c_int{ 1, 4 }, 2, .float32);
+    defer _ = mlx.mlx_array_free(a32);
+    var a16 = mlx.mlx_array_new();
+    defer _ = mlx.mlx_array_free(a16);
+    try mlx.check(mlx.mlx_astype(&a16, a32, .float16, s));
+    const r = try computeLogprobs(testing.allocator, a16, 1, 4, s);
+    defer testing.allocator.free(r.top_logprobs);
+    const lse: f32 = 5.0 + @log(1.0 + @exp(@as(f32, -5.0)) + @exp(@as(f32, -25.0)) + @exp(@as(f32, -35.0)));
+    try testing.expectApproxEqAbs(-20.0 - lse, r.token_logprob, 1e-4);
+    for (r.top_logprobs) |t| try testing.expect(std.math.isFinite(t.logprob));
 }
 
 test "sampleToken: reported logprobs are the model's, not the client's temperature" {

@@ -860,12 +860,25 @@ pub const ModelConfig = struct {
         if (self.linear_num_value_heads == 0) return 0;
         const linear_layers: u64 = @as(u64, self.num_hidden_layers) -| self.attnCacheLayerCount();
         if (linear_layers == 0) return 0;
+        const state_elem: u64 = if (self.ssmStateDtype() == .float32) 4 else 2;
         const state: u64 = @as(u64, self.linear_num_value_heads) *
-            @as(u64, self.linear_value_head_dim) * @as(u64, self.linear_key_head_dim) * 2;
+            @as(u64, self.linear_value_head_dim) * @as(u64, self.linear_key_head_dim) * state_elem;
         const conv_dim: u64 = 2 * @as(u64, self.linear_num_key_heads) * self.linear_key_head_dim +
             @as(u64, self.linear_num_value_heads) * self.linear_value_head_dim;
         const conv: u64 = @as(u64, self.linear_conv_kernel_dim) -| 1;
         return linear_layers * (state + conv * conv_dim * 2);
+    }
+
+    /// Activation dtype: f16 for a Prism Hadamard pack (its own contract: f16
+    /// activations over f16 scales), bf16 everywhere else.
+    pub fn actDtype(self: *const ModelConfig) mlx.mlx_dtype {
+        return if (self.hadamard_block > 0) .float16 else .bfloat16;
+    }
+
+    /// GatedDeltaNet recurrent state dtype: f32 on Hadamard packs, as the
+    /// reference runtime keeps it; bf16 elsewhere.
+    pub fn ssmStateDtype(self: *const ModelConfig) mlx.mlx_dtype {
+        return if (self.hadamard_block > 0) .float32 else .bfloat16;
     }
 
     /// Configured MTP depth (0 = auto). Hadamard packs run a grafted head that
@@ -3597,9 +3610,10 @@ fn hasWeightsUnder(weights: *const Weights, prefix: []const u8) bool {
 /// that already loaded binds byte-identically. Scan order puts the most
 /// specific spelling first: a `model.language_model.*` checkpoint also
 /// satisfies the bare "model" probe.
-/// Prism Hadamard packs ship every unpacked tensor f32 (norms, A_log, dt_bias,
-/// the dense GDN a/b rows, conv): the 1-D ones widen the bf16 residual at layer 0,
-/// the rest double their bytes. Sign vectors stay f32: the rotation runs in f32.
+/// Prism Hadamard packs run f16 activations over f16 scales (the pack's own
+/// contract) and ship the unpacked tensors f32 (norms, conv, the dense GDN a/b
+/// rows, A_log, dt_bias): an f32 table widens the f16 residual, so those
+/// narrow to f16. Signs stay f32: the rotation runs in f32.
 pub fn narrowHadamardPackTables(config: *const ModelConfig, weights: *Weights, s: mlx.mlx_stream) !void {
     if (config.hadamard_block == 0) return;
     var it = weights.map.iterator();
@@ -3608,7 +3622,7 @@ pub fn narrowHadamardPackTables(config: *const ModelConfig, weights: *Weights, s
         if (mlx.mlx_array_dtype(v) != .float32) continue;
         if (std.mem.endsWith(u8, kv.key_ptr.*, ".signs")) continue;
         var cast = mlx.mlx_array_new();
-        try mlx.check(mlx.mlx_astype(&cast, v, .bfloat16, s));
+        try mlx.check(mlx.mlx_astype(&cast, v, config.actDtype(), s));
         _ = mlx.mlx_array_free(v);
         kv.value_ptr.* = cast;
     }
@@ -3635,7 +3649,17 @@ pub fn resolveWeightPrefix(config: *ModelConfig, weights: *const Weights) void {
 /// Load all safetensors files from model_dir.
 /// When `load_vision` is true, vision_tower and multi_modal_projector weights are included.
 pub fn loadWeights(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8) !Weights {
-    return loadWeightsOpt(io, allocator, model_dir, false);
+    return loadWeightsOpt(io, allocator, model_dir, .{});
+}
+
+/// How a load treats stored dtypes. `keep_f16`: a pack whose activation dtype
+/// is f16 (Prism Hadamard packs) keeps its f16 side tensors and tables as
+/// stored; narrowing them to bf16 drops 3 mantissa bits of every group scale.
+pub const LoadOpts = struct { vision: bool = false, keep_f16: bool = false };
+
+/// The text model's weights for `config`.
+pub fn loadModelWeights(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8, config: *const ModelConfig, load_vision: bool) !Weights {
+    return loadWeightsOpt(io, allocator, model_dir, .{ .vision = load_vision, .keep_f16 = config.actDtype() == .float16 });
 }
 
 /// Load ONE safetensors file (absolute path) into a Weights map — for
@@ -3650,7 +3674,7 @@ pub fn loadWeightsSingleFile(allocator: std.mem.Allocator, abs_path: []const u8)
 
     const pathz = try allocator.dupeSentinel(u8, abs_path, 0);
     defer allocator.free(pathz);
-    try loadSafetensorsFile(allocator, &weights, pathz, s, false);
+    try loadSafetensorsFile(allocator, &weights, pathz, s, .{});
 
     if (weights.count() == 0) {
         log.err("no usable weights loaded from {s} — corrupt or empty safetensors file?\n", .{abs_path});
@@ -3660,13 +3684,13 @@ pub fn loadWeightsSingleFile(allocator: std.mem.Allocator, abs_path: []const u8)
 }
 
 pub fn loadWeightsWithVision(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8) !Weights {
-    return loadWeightsOpt(io, allocator, model_dir, true);
+    return loadWeightsOpt(io, allocator, model_dir, .{ .vision = true });
 }
 
-fn loadWeightsOpt(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8, load_vision: bool) !Weights {
+fn loadWeightsOpt(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u8, opts: LoadOpts) !Weights {
     var dir = try std.Io.Dir.openDirAbsolute(io, model_dir, .{ .iterate = true });
     defer dir.close(io);
-    return loadWeightsFromOpenDir(io, allocator, dir, model_dir, load_vision);
+    return loadWeightsFromOpenDir(io, allocator, dir, model_dir, opts);
 }
 
 /// Load every `*.safetensors` in an already-open `dir` into a Weights map.
@@ -3674,7 +3698,7 @@ fn loadWeightsOpt(io: std.Io, allocator: std.mem.Allocator, model_dir: []const u
 /// absolute path for `mlx_load_safetensors` and to phrase the error message.
 /// Split out of `loadWeightsOpt` so the incomplete-checkpoint guard below is
 /// unit-testable against a `tmpDir` (mirrors `model_discovery.discoverModelsInDir`).
-fn loadWeightsFromOpenDir(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, model_dir: []const u8, load_vision: bool) !Weights {
+fn loadWeightsFromOpenDir(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, model_dir: []const u8, opts: LoadOpts) !Weights {
     var weights = Weights.init(allocator);
     errdefer weights.deinit();
 
@@ -3706,7 +3730,7 @@ fn loadWeightsFromOpenDir(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.
         defer allocator.free(path);
 
         log.info("Loading {s}...\n", .{entry.name});
-        try loadSafetensorsFile(allocator, &weights, path, s, load_vision);
+        try loadSafetensorsFile(allocator, &weights, path, s, opts);
         file_count += 1;
     }
 
@@ -3792,8 +3816,9 @@ pub fn loadSafetensorsFile(
     weights: *Weights,
     path: [*:0]const u8,
     s: mlx.mlx_stream,
-    load_vision: bool,
+    opts: LoadOpts,
 ) !void {
+    const load_vision = opts.vision;
     var tensor_map = mlx.mlx_map_string_to_array_new();
     defer _ = mlx.mlx_map_string_to_array_free(tensor_map);
 
@@ -3826,7 +3851,7 @@ pub fn loadSafetensorsFile(
         // ndim is a use-after-free, not a zero.
         const ndim = mlx.mlx_array_ndim(value);
         var final_value = value;
-        if (narrowsLoadedF16(key_str, ndim, mlx.mlx_array_dtype(value)) and
+        if (!opts.keep_f16 and narrowsLoadedF16(key_str, ndim, mlx.mlx_array_dtype(value)) and
             (ndim != 1 or narrow1dEnabled()))
         {
             var cast = mlx.mlx_array_new();
@@ -3977,7 +4002,7 @@ test "loadWeights on a weightless dir (incomplete download) errors clearly, not 
 
     try std.testing.expectError(
         error.NoWeightFiles,
-        loadWeightsFromOpenDir(io, allocator, tmp.dir, "/incomplete-model", false),
+        loadWeightsFromOpenDir(io, allocator, tmp.dir, "/incomplete-model", .{}),
     );
 }
 
@@ -4001,7 +4026,7 @@ test "loadWeights reads only the shards the index names (issue #274)" {
     const cwd = std.mem.span(@as([*:0]const u8, @ptrCast(cwd_ptr)));
     const dir = try std.fmt.allocPrint(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
     defer allocator.free(dir);
-    var w = try loadWeightsFromOpenDir(io, allocator, tmp.dir, dir, false);
+    var w = try loadWeightsFromOpenDir(io, allocator, tmp.dir, dir, .{});
     defer w.deinit();
     try std.testing.expectEqual(@as(u32, 1), w.count());
 }
@@ -4024,7 +4049,7 @@ test "loadWeights ignores an index that names no shard on disk (re-sharded uploa
     const cwd = std.mem.span(@as([*:0]const u8, @ptrCast(cwd_ptr)));
     const dir = try std.fmt.allocPrint(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd, tmp.sub_path });
     defer allocator.free(dir);
-    var w = try loadWeightsFromOpenDir(io, allocator, tmp.dir, dir, false);
+    var w = try loadWeightsFromOpenDir(io, allocator, tmp.dir, dir, .{});
     defer w.deinit();
     try std.testing.expectEqual(@as(u32, 1), w.count());
 }

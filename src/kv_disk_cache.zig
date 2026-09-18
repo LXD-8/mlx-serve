@@ -6138,13 +6138,15 @@ test "volumeSpace: the live probe is plausible or null (statfs ABI guard)" {
 
 test "volumeSpace: free is what the OS grants, never less than statfs' f_bavail" {
     // Purgeable space is not in f_bavail; the tier used to refuse a volume with 117 GB usable.
+    // Three separate live probes: other writers move free space between them, hence the slack.
+    const slack: u64 = 1 << 30;
     var st: DarwinStatfs = undefined;
     try testing.expect(statfs("/", &st) == 0);
     const vs = volumeSpace("/") orelse return error.VolumeSpaceProbeFailed;
     const granted = msv_volume_free_for_use("/");
     try testing.expect(granted > 0);
-    try testing.expect(vs.free >= @as(u64, st.f_bsize) * st.f_bavail);
-    if (granted <= vs.total) try testing.expectEqual(granted, vs.free);
+    try testing.expect(vs.free + slack >= @as(u64, st.f_bsize) * st.f_bavail);
+    if (granted <= vs.total) try testing.expect(@max(granted, vs.free) - @min(granted, vs.free) < slack);
 }
 
 test "DiskTier: SSD-first declines to store when the VOLUME is short, and says so" {

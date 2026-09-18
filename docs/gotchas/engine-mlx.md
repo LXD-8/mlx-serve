@@ -5137,3 +5137,20 @@ Fix: `verifyRows2d` slices the first `1+m` rows before the reshape in both graph
 short block is `error.MtpVerifyBlockShape`, never an MLX raise), and the finish filters
 only the `1+m` rows it reads. Guard: `batched corrections read only 1+m rows of a
 group-padded verify block`.
+
+## 2-bit GEMV: half2 sums were fast and not exact (2026-09-18)
+
+- The Bonsai decode/verify GEMV (`qmv2.zig`) decoded codes with a half2
+  magic-number trick and accumulated 8-term partials in half2 with x
+  prescaled by 2^-6. Under bf16 output rounding hid it; under f16 it cost
+  1.55x stock's RMS error vs f32 truth (and the prescale pushed |x| < 2^-8
+  into half subnormals).
+- Fix: keep the exact half2 decode, sum in f32. M=1 got faster (1.45x stock,
+  was 1.31x). At verify widths the ALU doubles: pairing two exact half
+  products per f32 flush was still 1.21x RMS / 1.45x max worse, so the M 2..3
+  kernel holds its rows of x in f32 registers and widens each code word once
+  (1.13/1.18x stock, stock's error); at M >= 4 that spills and stock serves.
+  The half2 version's 3-row verify was 33.6 ms, exact 35.8, stock 40.6.
+- Bar: `qmv2: no worse than stock ... against f32 truth` (within 5% of
+  stock's RMS and max error, bf16 + f16, both bias layouts). A tolerance vs
+  stock's OUTPUT (the old test) passed the half2 kernel.

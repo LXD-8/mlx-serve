@@ -1454,10 +1454,7 @@ pub fn main(init: std.process.Init) !void {
         // ── Offline single-prompt mode. mlx ops run on this thread, no
         //    scheduler. The same load path as pre-A1.
         log.info("Loading weights...\n", .{});
-        var weights = if (load_vision)
-            try model_mod.loadWeightsWithVision(io, allocator, model_dir)
-        else
-            try model_mod.loadWeights(io, allocator, model_dir);
+        var weights = try model_mod.loadModelWeights(io, allocator, model_dir, config, load_vision);
         defer weights.deinit();
         model_mod.resolveWeightPrefix(config, &weights);
         try model_mod.narrowHadamardPackTables(config, &weights, mlx.gpuStream());

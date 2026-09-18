@@ -1095,17 +1095,15 @@ pub fn maskAndArgmax(s: mlx.mlx_stream, logits_in: mlx.mlx_array, suppress_mask:
 pub fn fullReadoutArgmax(
     s: mlx.mlx_stream,
     target: *Transformer,
-    x_in: mlx.mlx_array,
+    x: mlx.mlx_array,
     suppress_mask: ?mlx.mlx_array,
 ) !mlx.mlx_array {
-    const x_rot = try target.rotateInputFor(target.lm_head_w, x_in);
-    defer if (x_rot) |r| {
-        _ = mlx.mlx_array_free(r);
-    };
-    const x = x_rot orelse x_in;
     var logits = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(logits);
-    if (target.lm_head_s.ctx == null) {
+    if (target.rht != null) {
+        _ = mlx.mlx_array_free(logits);
+        logits = try target.hadamardLmHead(x);
+    } else if (target.lm_head_s.ctx == null) {
         const axes = [_]c_int{ 1, 0 };
         var wt = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(wt);
@@ -2112,7 +2110,7 @@ fn loadMtpWeightsFromCheckpoint(io: std.Io, allocator: std.mem.Allocator, model_
             const p = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ model_dir, sh });
             const pz = try allocator.dupeSentinel(u8, p, 0);
             defer allocator.free(pz);
-            try model_mod.loadSafetensorsFile(allocator, &weights, pz, s, false);
+            try model_mod.loadSafetensorsFile(allocator, &weights, pz, s, .{});
         }
         return weights;
     }
@@ -2585,14 +2583,14 @@ fn targetLmHead(self: *const MtpModel, target: *Transformer, x: mlx.mlx_array, s
     // (hy_v3 2-bit trunk ships an 8-bit lm_head — the global bits crashed the
     // whole process in mlx's shape check, live 2026-07-14). Non-affine trunks
     // keep the config fallback.
+    if (target.rht != null) {
+        _ = mlx.mlx_array_free(out);
+        return target.hadamardLmHead(x);
+    }
     const qp = headQuantParams(&target.config, target.lm_head_w, target.lm_head_s);
-    const x_rot = try target.rotateInputFor(target.lm_head_w, x);
-    defer if (x_rot) |r| {
-        _ = mlx.mlx_array_free(r);
-    };
     try mlx.check(mlx.mlx_quantized_matmul(
         &out,
-        x_rot orelse x,
+        x,
         target.lm_head_w,
         target.lm_head_s,
         target.lm_head_b,
@@ -2639,14 +2637,32 @@ const FrontOut = struct {
 /// uncompiled fallback.
 /// The fusion stub shared by the full layer forward and the KV-only history
 /// append: x = fc(concat([norm(embed ids), norm(hidden)])). Returns owned x.
+/// `x` in `dt` as an owned handle (a retained reference when it already is).
+fn castOwned(x: mlx.mlx_array, dt: mlx.mlx_dtype, s: mlx.mlx_stream) !mlx.mlx_array {
+    var out = mlx.mlx_array_new();
+    if (mlx.mlx_array_dtype(x) == dt) {
+        try mlx.check(mlx.mlx_array_set(&out, x));
+    } else {
+        try mlx.check(mlx.mlx_astype(&out, x, dt, s));
+    }
+    return out;
+}
+
 fn fcConcat(self: *const MtpModel, target: *Transformer, id_arr: mlx.mlx_array, hidden: mlx.mlx_array, seq_len: c_int) !mlx.mlx_array {
     const s = self.s;
     const eps = target.config.rms_norm_eps;
-    const emb = try embedTargetTokens(target, id_arr, seq_len, s);
+    // A grafted head can run in another dtype than the trunk (a bf16 head on
+    // an f16 Hadamard pack): its inputs enter in the head's own dtype.
+    const head_dt = mlx.mlx_array_dtype(self.pre_fc_norm_hidden);
+    const emb_raw = try embedTargetTokens(target, id_arr, seq_len, s);
+    defer _ = mlx.mlx_array_free(emb_raw);
+    const emb = try castOwned(emb_raw, head_dt, s);
     defer _ = mlx.mlx_array_free(emb);
+    const hid = try castOwned(hidden, head_dt, s);
+    defer _ = mlx.mlx_array_free(hid);
     const e_normed = try rmsNormFn(emb, self.pre_fc_norm_emb, eps, s);
     defer _ = mlx.mlx_array_free(e_normed);
-    const h_normed = try rmsNormFn(hidden, self.pre_fc_norm_hidden, eps, s);
+    const h_normed = try rmsNormFn(hid, self.pre_fc_norm_hidden, eps, s);
     defer _ = mlx.mlx_array_free(h_normed);
 
     var cat = mlx.mlx_array_new();
