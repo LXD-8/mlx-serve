@@ -144,52 +144,37 @@ fn launch(k: mlx.mlx_fast_metal_kernel, inputs: []const mlx.mlx_array, x: mlx.ml
 
 /// Verify widths M = 2..3 (MTP depth 2), f16 activations over the Prism
 /// ternary layout (biases == -scales, so codes decode to q-1 and the bias term
-/// drops). Each lane holds its M rows of x in f32 registers and each code word
-/// is decoded and widened once, so the inner loop is plain f32 FMAs: stock's
-/// error, 1.13x/1.18x at M 2/3. Past M=3 the registers spill; stock serves.
+/// drops). Codes and x stay half2 in registers and widen at the FMA, so the
+/// math is f32 FMAs over exact inputs (stock's error) at half the registers.
+/// x is read straight from device: it is M x K halves and cache-resident.
 const ROWS_SOURCE =
-    \\constexpr int R = 4, G = 8, NL = 32, NT = 32 * G;
-    \\threadgroup half2 xs[2][M][NL][8];
+    \\constexpr int R = 4, G = 8;
     \\const int K = x_shape[x_ndim - 1];
     \\const int N = w_shape[0];
     \\const int KW = K / 16, KG = K / 128;
     \\uint lane = thread_index_in_simdgroup;
     \\uint sgi = simdgroup_index_in_threadgroup;
-    \\uint tid = sgi * 32 + lane;
     \\int grow = (threadgroup_position_in_grid.y * G + sgi) * R;
     \\const device uint* wq = w + grow * KW + lane;
     \\const device T* sp = scales + grow * KG + lane / 8;
-    \\auto stage = [&](int k, int buf) {
-    \\  for (int t = tid; t < M * NL; t += NT) {
-    \\    int m = t / NL, l = t % NL;
-    \\    const device half* xr = (const device half*)(x + m * K + k + l * 16);
-    \\    for (int i = 0; i < 8; ++i) xs[buf][m][l][i] = half2(xr[i], xr[i + 8]);
-    \\  }
-    \\};
     \\float res[R][M];
     \\for (int r = 0; r < R; ++r) for (int m = 0; m < M; ++m) res[r][m] = 0;
-    \\stage(0, 0);
-    \\threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\int buf = 0;
     \\for (int k = 0; k < K; k += 512) {
     \\  uint wv[R]; float sc[R];
     \\  for (int r = 0; r < R; ++r) { wv[r] = wq[r * KW]; sc[r] = float(sp[r * KG]); }
-    \\  if (k + 512 < K) stage(k + 512, buf ^ 1);
-    \\  float2 xf[M][8];
-    \\  for (int m = 0; m < M; ++m) for (int j = 0; j < 8; ++j) xf[m][j] = float2(xs[buf][m][lane][j]);
-    \\  for (int r = 0; r < R; ++r) {
-    \\    half2 qh[8];
-    \\    h2dec(wv[r], qh, 1.0h);
-    \\    float2 qf[8];
-    \\    for (int j = 0; j < 8; ++j) qf[j] = float2(qh[j]);
-    \\    for (int m = 0; m < M; ++m) {
-    \\      float2 acc = qf[0] * xf[m][0];
-    \\      for (int j = 1; j < 8; ++j) acc = fma(qf[j], xf[m][j], acc);
+    \\  half2 q[R][8];
+    \\  for (int r = 0; r < R; ++r) h2dec(wv[r], q[r], 1.0h);
+    \\  for (int m = 0; m < M; ++m) {
+    \\    const device T* xr = x + m * K + k + lane * 16;
+    \\    half2 xh[8];
+    \\    for (int j = 0; j < 8; ++j) xh[j] = half2(xr[j], xr[j + 8]);
+    \\    for (int r = 0; r < R; ++r) {
+    \\      float2 acc = float2(q[r][0]) * float2(xh[0]);
+    \\      for (int j = 1; j < 8; ++j) acc = fma(float2(q[r][j]), float2(xh[j]), acc);
     \\      res[r][m] += sc[r] * (acc.x + acc.y);
     \\    }
     \\  }
-    \\  threadgroup_barrier(mem_flags::mem_threadgroup);
-    \\  buf ^= 1; wq += 32; sp += 4;
+    \\  wq += 32; sp += 4;
     \\}
     \\for (int r = 0; r < R; ++r) for (int m = 0; m < M; ++m) {
     \\  float v = simd_sum(res[r][m]);

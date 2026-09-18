@@ -5148,9 +5148,12 @@ group-padded verify block`.
 - Fix: keep the exact half2 decode, sum in f32. M=1 got faster (1.45x stock,
   was 1.31x). At verify widths the ALU doubles: pairing two exact half
   products per f32 flush was still 1.21x RMS / 1.45x max worse, so the M 2..3
-  kernel holds its rows of x in f32 registers and widens each code word once
-  (1.13/1.18x stock, stock's error); at M >= 4 that spills and stock serves.
-  The half2 version's 3-row verify was 33.6 ms, exact 35.8, stock 40.6.
+  kernel sums in f32 with stock's error; M >= 4 goes to stock.
+- The first exact M 2..3 kernel held x and the widened codes in f32 registers
+  and staged x through threadgroup memory, which made it slower than the half2
+  one. Keeping codes and x half2 in registers, widened at the FMA (same math),
+  and reading x straight from device each bought ~1.8 ms: 3-row trunk forward
+  32.2 ms vs half2 33.3, first exact 35.4, stock 40.6. R=8 rows spills (2x).
 - Bar: `qmv2: no worse than stock ... against f32 truth` (within 5% of
   stock's RMS and max error, bf16 + f16, both bias layouts). A tolerance vs
   stock's OUTPUT (the old test) passed the half2 kernel.
