@@ -167,8 +167,15 @@ enum AppAccentColor: String, CaseIterable, Identifiable {
 /// It carries the UI language as well as the appearance because a language is
 /// the same kind of setting — one choice, honored by every window — and both
 /// have to be applied at the same place: the `\.locale` environment here at
-/// the root, and (through `BundleLanguageOverride`) the bundle lookup that
-/// `L10n` and AppKit read.
+/// the root (SwiftUI literals), and (through `BundleLanguageOverride`) the
+/// bundle lookup that `L10n` and AppKit read.
+///
+/// The language deliberately does NOT key a view's identity. An earlier cut
+/// ended in `.id(languageRaw)` to force `L10n` bodies to re-run; that also
+/// destroyed every descendant's `@State` (a half-typed composer draft, each
+/// scroll position). The invalidation now rides `LanguageLookupRevision`,
+/// which `L10n.text` reads inside the body, so observation re-runs exactly
+/// the views that built copy and leaves their state alone.
 struct AppChrome: ViewModifier {
     @AppStorage(InterfacePrefKey.appearanceMode) private var modeRaw = AppAppearanceMode.system.rawValue
     @AppStorage(InterfacePrefKey.accentColor) private var accentRaw = AppAccentColor.system.rawValue
@@ -185,10 +192,10 @@ struct AppChrome: ViewModifier {
             // view that merely re-renders with the same `Locale` value keeps
             // the language it already resolved.
             .environment(\.locale, language.locale ?? .autoupdatingCurrent)
+            // The swap itself (and the `L10n` invalidation) is ordered BEFORE
+            // the preference write that re-renders the views; see
+            // `AppLanguage.select`.
             .onAppear { BundleLanguageOverride.apply(language) }
-            // `L10n` resolves to a plain `String` while the body is built, so
-            // the only thing that re-runs those bodies is a new identity.
-            .id(languageRaw)
     }
 }
 
