@@ -536,6 +536,10 @@ pub const Slot = struct {
     /// here so the client cannot round-trip the loop into the next prompt.
     loop_trim_start: ?usize,
     cancelled: std.atomic.Value(bool),
+    /// Inference-thread passes (a prefill, a decode tick) holding this slot, taken
+    /// under `queue_mu`. `complete` waits it out: the handler owns sampling state
+    /// the pass reads (`think_bound`, `constraint`) and frees it once `complete` returns.
+    in_pass: std.atomic.Value(u32) = .init(0),
     /// Reasoning-protocol payload boundary, published by the inference thread
     /// BEFORE the token that carries it is pushed (single-writer atomics, so
     /// the conn thread reading token i already sees its span). `token_index`
@@ -1775,6 +1779,14 @@ pub const Scheduler = struct {
             slot.model.session_busy = false;
             slot.holds_session = false;
             self.session_cond.broadcast(self.io);
+        }
+
+        // Out of every list, so no new pass can take it; wait out the one that has it,
+        // before the cleanup queue owns (and may free) the slot.
+        if (slot.in_pass.load(.acquire) != 0) {
+            self.queue_mu.unlock(self.io);
+            while (slot.in_pass.load(.acquire) != 0) std.Io.sleep(self.io, .fromMilliseconds(1), .real) catch {};
+            self.queue_mu.lockUncancelable(self.io);
         }
 
         self.cleanup_queue.append(self.allocator, slot) catch {
@@ -4472,6 +4484,7 @@ fn inferenceLoop(ctx: ThreadCtx) void {
             const n_admit = admitPendingTick(cand_buf[0..n_cands], live_buf[0..n_live], &admit_idx);
             for (admit_idx[0..n_admit]) |idx| {
                 to_prefill[n_prefill] = sch.pending.items[idx];
+                _ = to_prefill[n_prefill].in_pass.fetchAdd(1, .acq_rel);
                 n_prefill += 1;
             }
             // Remove admitted entries in DESCENDING index order so the
@@ -4493,6 +4506,7 @@ fn inferenceLoop(ctx: ThreadCtx) void {
         //    no per-tick stream rebind / mutex coexistence is needed.
         if (n_prefill > 0) {
             for (to_prefill[0..n_prefill], 0..) |slot, pi| {
+                defer _ = slot.in_pass.fetchSub(1, .acq_rel);
                 // Between the slots of one admitted batch, tick the streams
                 // that just started decoding — a single-chunk prefill exposes
                 // no chunk-boundary yield, so without this every slot's first
@@ -4566,8 +4580,12 @@ fn inferenceLoop(ctx: ThreadCtx) void {
             for (sch.decoding.items) |s| {
                 if (s.cancelled.load(.acquire) or s.finished or s.error_code != null) continue;
                 active.append(sch.allocator, s) catch break;
+                _ = s.in_pass.fetchAdd(1, .acq_rel);
             }
         }
+        defer for (active.items) |s| {
+            _ = s.in_pass.fetchSub(1, .acq_rel);
+        };
 
         // 4. Decode tick. Charge the full wall-clock tick time to each
         //    participating slot — for batched ticks this matches the per-slot
@@ -5909,9 +5927,13 @@ fn interleaveDecodeTick(sch: *Scheduler) u64 {
         if (s.cancelled.load(.acquire) or s.finished or s.error_code != null) continue;
         if (n >= buf.len) break;
         buf[n] = s;
+        _ = s.in_pass.fetchAdd(1, .acq_rel);
         n += 1;
     }
     sch.queue_mu.unlock(sch.io);
+    defer for (buf[0..n]) |s| {
+        _ = s.in_pass.fetchSub(1, .acq_rel);
+    };
     if (n == 0) return 0;
     // The interval since these slots' previous tick contains a prefill chunk; the serial
     // cell must not fold it as a token's wall time. Drop it; the next tick seeds afresh.

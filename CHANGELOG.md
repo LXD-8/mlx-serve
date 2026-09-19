@@ -13,6 +13,7 @@
 - Logprobs are computed in f32: f16-logit models returned `-inf`/NaN (invalid JSON) and bf16 ones were rounded.
 - 2-bit packs take the dequant+GEMM prefill route from 384-token chunks (was 2048): +7-8% prefill on prompts under 2k tokens.
 - `mlx-serve launch pi` sends the picked thinking level as `reasoning_effort` (was `enable_thinking` only, which dropped low/medium).
+- Stopping a request while another one was decoding could crash the server.
 
 ## v26.9.4 — Correctness Fixes, Chinese Translation, Benchmarks
 

@@ -2213,3 +2213,20 @@ Guard: the format matrix's `usage reasoning_tokens > 0` check on a GGUF arm.
   now takes chat's precedence (`reasoning_budget_tokens` > effort word >
   `--reasoning-budget`, Qwen3.8 implicit low) and arms the decode-time bound.
   Guard: `tests/test_reasoning_budget_stream.sh` (responses cases).
+
+## Cancel mid-tick read a freed ThinkBound (2026-09-18)
+
+Stopping a pi request while a second MTP stream decoded killed the server: SIGSEGV in
+`thinkBoundTick` under `runMtpGroups`, at a thread-stack address.
+
+Cause: `sampling.think_bound` (and `constraint`) point into the request handler's frame.
+`complete` removed the slot from `decoding` and returned; the handler freed its state, but
+the inference thread was already inside a tick whose snapshot held the slot, and the group
+fallback ticked it without re-checking `cancelled`.
+
+Fix: `Slot.in_pass` counts inference-thread passes holding the slot, taken under
+`queue_mu` wherever a pass takes it (prefill pop, the step-3 snapshot, `interleaveDecodeTick`).
+`complete` waits for zero before handing the slot to the cleanup queue.
+
+Guard: `tests/test_cancel_mid_tick.sh` (two MTP streams, kill one every 3 s):
+HEAD crashed on the 2nd cancel, the fix survived 15.
