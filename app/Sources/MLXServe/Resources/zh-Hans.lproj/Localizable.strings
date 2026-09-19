@@ -1569,3 +1569,5 @@
 "↩ ask · esc close" = "↩ 提问 · esc 关闭";
 "✓ On disk" = "✓ 已在本地";
 "🎙️ I couldn't make out any speech in that clip. Try recording again." = "🎙️ 这段音频里听不出任何说话声。请重新录制。";
+"The 27B, sized for 16 GB" = "为 16 GB 精简的 27B";
+"Qwen 3.8 27B squeezed down to about 2 bits per weight by prism-ml, so one of the strongest models here fits a Mac with 16 GB of memory. It gives up some accuracy against the full-size 27B and replies slower on a small Mac, but it is far smarter than anything else that fits in 16 GB. It reads images too, and uses the same built-in speed trick as the 27B." = "由 prism-ml 将 Qwen 3.8 27B 压缩到每个权重约 2 位，让这里最强的模型之一可以在 16 GB 内存的 Mac 上运行。与完整的 27B 相比它会损失一些准确度，在小内存 Mac 上回复也更慢，但比其他能放进 16 GB 的模型聪明得多。它也能读图片，并使用与 27B 相同的内置提速技巧。";
