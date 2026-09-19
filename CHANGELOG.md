@@ -14,6 +14,7 @@
 - 2-bit packs take the dequant+GEMM prefill route from 384-token chunks (was 2048): +7-8% prefill on prompts under 2k tokens.
 - `mlx-serve launch pi` sends the picked thinking level as `reasoning_effort` (was `enable_thinking` only, which dropped low/medium).
 - Stopping a request while another one was decoding could crash the server.
+- Concurrent requests decode faster on M4-family Macs: four MTP streams share one verify forward (Qwen3.8-27B 4-bit, M4 Max: 72 to 109 tok/s aggregate), and batched decode past 1k tokens of context no longer copies every stream's KV per step (4 streams at 28k: 26 to 64 tok/s).
 
 ## v26.9.4 — Correctness Fixes, Chinese Translation, Benchmarks
 

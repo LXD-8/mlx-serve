@@ -1497,8 +1497,10 @@ pub const Generator = struct {
     /// Set per tick by the scheduler.
     spec_cost_solo: bool = true,
     /// Draft-depth cap while this slot verifies inside a batched group (0 = none):
-    /// the group's rows must stay on the split-K verify lane (`scheduler.mtpGroupRowCap`).
+    /// the group's rows must stay on the split-K verify lane (`scheduler.mtpSubGroupPlan`).
     mtp_group_cap: u32 = 0,
+    /// Read with a non-zero `mtp_group_cap`: draft to the cap (`mtpGroupPlan`).
+    mtp_group_fill: bool = false,
     mtp_planner_owned: bool = false,
     mtp_planner_pending: bool = false,
     mtp_planner_width: ?u8 = null,
@@ -9905,11 +9907,17 @@ pub const Generator = struct {
         if (group_planner.enabled()) if (self.mtp_planner_width) |width| {
             return .{ .m_lo = width, .m_hi = width, .tau_ln = 0 };
         };
-        var plan = self.mtpRoundPlanTraced();
-        if (self.mtp_group_cap > 0) {
-            plan.m_lo = @min(plan.m_lo, self.mtp_group_cap);
-            plan.m_hi = @min(plan.m_hi, self.mtp_group_cap);
-        }
+        const plan = self.mtpRoundPlanTraced();
+        return if (self.mtp_group_cap > 0) mtpGroupPlan(plan, self.mtp_group_cap, self.mtp_group_fill and mtpForcedDepth() == null) else plan;
+    }
+
+    /// A lane's plan inside a batched verify. The group pays for its widest lane's rows,
+    /// so where those rows are one fixed tile (`fill`) every lane drafts to the cap.
+    pub fn mtpGroupPlan(solo: MtpRoundPlan, cap: u32, fill: bool) MtpRoundPlan {
+        if (fill) return .{ .m_lo = cap, .m_hi = cap, .tau_ln = 0 };
+        var plan = solo;
+        plan.m_lo = @min(plan.m_lo, cap);
+        plan.m_hi = @min(plan.m_hi, cap);
         return plan;
     }
 
@@ -15501,6 +15509,17 @@ test "the qwen4 rerank draft feeds the MIXER output, never the pre-mixer stream"
 
     // And the owned mixer vector is freed by the chain, not leaked per step.
     try testing.expect(std.mem.indexOf(u8, body, "mlx_array_free(step_out.rerank_x)") != null);
+}
+
+test "mtpGroupPlan: a tile group drafts every lane to the cap, a split-K group only clamps" {
+    const solo = Generator.MtpRoundPlan{ .m_lo = 1, .m_hi = 5, .tau_ln = -0.4 };
+    const clamped = Generator.mtpGroupPlan(solo, 3, false);
+    try testing.expectEqual(@as(u32, 1), clamped.m_lo);
+    try testing.expectEqual(@as(u32, 3), clamped.m_hi);
+    // The tile's rows are paid by the widest lane, so a shallow lane wastes them.
+    const filled = Generator.mtpGroupPlan(solo, 3, true);
+    try testing.expectEqual(@as(u32, 3), filled.m_lo);
+    try testing.expectEqual(@as(u32, 3), filled.m_hi);
 }
 
 test "mtpEvExpectedTokens: 1 + sum of acceptance chain products" {

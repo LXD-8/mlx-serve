@@ -1326,9 +1326,36 @@ fn mixedPlainEnabled(bits: u32, group_size: u32, n: c_int) bool {
 ///   byte-identical to the pre-NAX dispatch; msg takes N >= 100000.
 /// - none: stock mlx_quantized_matmul.
 pub fn vqmmLaneFor(m: c_int, K: c_int, N: c_int, nax_on: bool, nax_min_m: c_int, crossrow_on: bool) VqmmLane {
-    if (m < 2 or m > 16) return .none;
+    return vqmmLaneForTile(m, K, N, if (nax_on) .nax else .off, nax_min_m, crossrow_on);
+}
+
+/// Which matmul2d tile this machine runs: the M5 matrix units (`nax`, one 16-row tile,
+/// M up to 16) or the same kernel as plain shader code on the M4 family (`shader`,
+/// 8/16/24-row tiles, M 8..24; a 32-row tile exceeds threadgroup memory and stock
+/// qmm is at its own roofline there).
+pub const VqmmTile = enum { off, nax, shader };
+
+pub const SHADER_TILE_MAX_M: c_int = 24;
+
+pub fn vqmmTileFrom(nax_available: bool, arch: []const u8, os_ver: []const u8) VqmmTile {
+    if (nax_available) return .nax;
+    const gpu = naxArchGeneration(arch);
+    if (gpu.gen == 16 and !gpu.phone and macosVersionAtLeast(os_ver, 26, 2)) return .shader;
+    return .off;
+}
+
+/// Tile row height for an M-row call.
+pub fn vqmmTileRows(tile: VqmmTile, m: c_int) c_int {
+    return if (tile == .shader) @divTrunc(m + 7, 8) * 8 else 16;
+}
+
+pub fn vqmmLaneForTile(m: c_int, K: c_int, N: c_int, tile: VqmmTile, nax_min_m: c_int, crossrow_on: bool) VqmmLane {
+    const max_m: c_int = if (tile == .shader) SHADER_TILE_MAX_M else 16;
+    if (m < 2 or m > max_m) return .none;
     if (N < 512) return .none;
-    if (nax_on and m >= nax_min_m and @mod(K, 256) == 0 and @mod(N, 32) == 0) return .nax;
+    const tile_min_m: c_int = if (tile == .shader) 8 else nax_min_m;
+    if (tile != .off and m >= tile_min_m and @mod(K, 256) == 0 and @mod(N, 32) == 0) return .nax;
+    if (m > 16) return .none;
     if (m > 7) {
         // crossrow (opt-in, non-NAX): M 8..9 past the plain-SIMD register
         // cliff. Its k-loop covers exactly 512 inputs per iteration and its
@@ -1375,8 +1402,10 @@ pub fn verifyQmm(
     // Affine packed geometry sanity: one uint32 column carries 32/bits source
     // values (5/6-bit rows are byte-packed but still exposed as uint32 arrays).
     if (@as(i64, wsh[1]) * 32 != @as(i64, K) * @as(i64, bits)) return null;
-    const nax_on = naxLaneEnvEnabled() and verifyQmmNaxAvailable();
-    const lane = vqmmLaneFor(m, K, N, nax_on, naxMinMForBits(bits), crossrowEnvEnabled());
+    const tile = verifyQmmTile();
+    const lane = vqmmLaneForTile(m, K, N, tile, naxMinMForBits(bits), crossrowEnvEnabled());
+    // The shader tile is measured at 4-bit only; other widths stay on stock.
+    if (lane == .nax and tile == .shader and bits != 4) return null;
     // The crossrow kernel is a strict 4-bit/g64 specialization (masked-nibble
     // dot with /16-prescaled activations) — other widths fall to stock.
     if (lane == .crossrow and (bits != 4 or group_size != 64)) return null;
@@ -1410,7 +1439,7 @@ pub fn verifyQmm(
         },
         // NAX m16 tile (M5-class): M 8..16 by default — past the plain-SIMD
         // register cliff. Construction stays strictly behind the probe.
-        .nax => return try runVerifyQmmNax(s, x, w, sc, bi, bits, group_size, m, K, N, xd, xsh),
+        .nax => return try runVerifyQmmNax(s, x, w, sc, bi, bits, group_size, m, vqmmTileRows(tile, m), K, N, xd, xsh),
         // Huge-N (lm_head class): the tiny-tile split-K grid thrashes the
         // scheduler there (measured 2.1x stock at M=4) — route through the
         // wide multi-simdgroup tile instead (2-column tile at M=7).
@@ -1647,6 +1676,22 @@ pub fn verifyQmmNaxAvailable() bool {
     return ok;
 }
 
+var vqmm_tile_cache: ?VqmmTile = null;
+
+/// The matmul2d tile this process dispatches (lane kill switch included).
+pub fn verifyQmmTile() VqmmTile {
+    if (!naxLaneEnvEnabled()) return .off;
+    if (vqmm_nax_probe_override) |v| return if (v) .nax else .off;
+    if (vqmm_tile_cache) |v| return v;
+    var arch_buf: [128]u8 = undefined;
+    const arch = gpuArchitecture(&arch_buf) orelse "";
+    var ver_buf: [64]u8 = undefined;
+    const ver = macosProductVersion(&ver_buf) orelse "";
+    const tile = vqmmTileFrom(verifyQmmNaxAvailable(), arch, ver);
+    vqmm_tile_cache = tile;
+    return tile;
+}
+
 fn computeNaxAvailable() bool {
     var force = false;
     if (std.c.getenv("MLX_SERVE_FORCE_GPU_FAMILY_FALLBACK")) |p| {
@@ -1832,7 +1877,7 @@ const VQMM_NAX_SOURCE: [:0]const u8 =
     \\using namespace metal;
     \\using namespace mpp::tensor_ops;
     \\
-    \\constexpr int BM = 16;
+    \\constexpr int BM = BMT;
     \\constexpr int BN = 32;
     \\constexpr int BK = 16;
     \\constexpr int NSG = 8;
@@ -1854,7 +1899,7 @@ const VQMM_NAX_SOURCE: [:0]const u8 =
     \\threadgroup float partial[NSG][BM * BN];
     \\
     \\constexpr auto desc = matmul2d_descriptor(
-    \\    16,
+    \\    BM,
     \\    32,
     \\    16,
     \\    false,
@@ -1877,7 +1922,7 @@ const VQMM_NAX_SOURCE: [:0]const u8 =
     \\    array<int, 2>{1, BN});
     \\
     \\auto ct_c = op.template get_destination_cooperative_tensor<
-    \\    tensor<device T, extents<int, 16, 16>, tensor_inline>,
+    \\    tensor<device T, extents<int, 16, BM>, tensor_inline>,
     \\    tensor<threadgroup T, extents<int, 32, 16>, tensor_inline>,
     \\    float>();
     \\_Pragma("unroll")
@@ -1948,13 +1993,13 @@ const VQMM_NAX_SOURCE: [:0]const u8 =
     \\    }
     \\    simdgroup_barrier(mem_flags::mem_threadgroup);
     \\
-    \\    auto tA = A.template slice<16, 16>(k0, 0);
+    \\    auto tA = A.template slice<16, BM>(k0, 0);
     \\    auto tB = B.template slice<32, 16>(0, 0);
     \\    op.run(tA, tB, ct_c);
     \\    simdgroup_barrier(mem_flags::mem_threadgroup);
     \\}
     \\
-    \\auto tC = C.template slice<32, 16>(0, 0);
+    \\auto tC = C.template slice<32, BM>(0, 0);
     \\ct_c.store(tC);
     \\threadgroup_barrier(mem_flags::mem_threadgroup);
     \\
@@ -1972,7 +2017,7 @@ const VQMM_NAX_SOURCE: [:0]const u8 =
 
 var vqmm_nax_kernel: ?mlx.mlx_fast_metal_kernel = null;
 
-/// ONLY call where verifyQmmNaxAvailable() — see the never-build rule.
+/// ONLY call where `verifyQmmTile()` is live — see the never-build rule.
 fn getVerifyQmmNaxKernel() !mlx.mlx_fast_metal_kernel {
     if (vqmm_nax_kernel) |k| return k;
     const input_names = [_][*:0]const u8{ "x", "w_q", "scales", "biases", "N_size" };
@@ -2000,22 +2045,22 @@ fn getVerifyQmmNaxKernel() !mlx.mlx_fast_metal_kernel {
 /// it around STOCK qmm — zero pad rows must produce zero output rows):
 /// collapse the caller's leading shape to [m, K] (mirrors MTPLX's
 /// x.reshape(m, k) so row padding is well-defined for every batch shape),
-/// then zero-pad the row axis to the tile's fixed 16. Owned handle.
-fn naxPadTo16(s: mlx.mlx_stream, x: mlx.mlx_array, m: c_int, K: c_int, xd: mlx.mlx_dtype) !mlx.mlx_array {
+/// then zero-pad the row axis to the tile's row height. Owned handle.
+fn naxPadRows(s: mlx.mlx_stream, x: mlx.mlx_array, m: c_int, tile: c_int, K: c_int, xd: mlx.mlx_dtype) !mlx.mlx_array {
     var x2 = mlx.mlx_array_new();
     defer _ = mlx.mlx_array_free(x2);
     const x2_shape = [_]c_int{ m, K };
     try mlx.check(mlx.mlx_reshape(&x2, x, &x2_shape, 2, s));
     var x16 = mlx.mlx_array_new();
     errdefer _ = mlx.mlx_array_free(x16);
-    if (m < 16) {
+    if (m < tile) {
         var zero = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(zero);
         const zdims = [_]c_int{};
         try mlx.check(mlx.mlx_zeros(&zero, &zdims, 0, xd, s));
         const pad_axes = [_]c_int{0};
         const pad_low = [_]c_int{0};
-        const pad_high = [_]c_int{16 - m};
+        const pad_high = [_]c_int{tile - m};
         try mlx.check(mlx.mlx_pad(&x16, x2, &pad_axes, 1, &pad_low, 1, &pad_high, 1, zero, "constant", s));
     } else {
         try mlx.check(mlx.mlx_array_set(&x16, x2));
@@ -2023,12 +2068,12 @@ fn naxPadTo16(s: mlx.mlx_stream, x: mlx.mlx_array, m: c_int, K: c_int, xd: mlx.m
     return x16;
 }
 
-/// The slice-back half: first m rows of the [16, N] tile output (pad rows
+/// The slice-back half: first m rows of the [tile, N] output (pad rows
 /// dropped). Owned handle.
-fn naxSliceRows(s: mlx.mlx_stream, y16: mlx.mlx_array, m: c_int, N: c_int) !mlx.mlx_array {
+fn naxSliceRows(s: mlx.mlx_stream, y16: mlx.mlx_array, m: c_int, tile: c_int, N: c_int) !mlx.mlx_array {
     var ym = mlx.mlx_array_new();
     errdefer _ = mlx.mlx_array_free(ym);
-    if (m < 16) {
+    if (m < tile) {
         const start = [_]c_int{ 0, 0 };
         const stop = [_]c_int{ m, N };
         const strides = [_]c_int{ 1, 1 };
@@ -2051,6 +2096,7 @@ fn runVerifyQmmNax(
     bits: u32,
     group_size: u32,
     m: c_int,
+    tile: c_int,
     K: c_int,
     N: c_int,
     xd: mlx.mlx_dtype,
@@ -2058,16 +2104,16 @@ fn runVerifyQmmNax(
 ) !?mlx.mlx_array {
     if (!vqmm_nax_engaged) {
         vqmm_nax_engaged = true;
-        log.info("[vqmm] NAX verify lane engaged at {d}-bit: M={d} K={d} N={d} gs={d} min_m={d} (MLX_SERVE_VERIFY_QMM_NAX=0 restores stock)\n", .{ bits, m, K, N, group_size, naxMinMForBits(bits) });
+        log.info("[vqmm] NAX verify lane engaged at {d}-bit ({s} tile, {d} rows): M={d} K={d} N={d} gs={d} (MLX_SERVE_VERIFY_QMM_NAX=0 restores stock)\n", .{ bits, @tagName(verifyQmmTile()), tile, m, K, N, group_size });
     }
-    const x16 = try naxPadTo16(s, x, m, K, xd);
+    const x16 = try naxPadRows(s, x, m, tile, K, xd);
     defer _ = mlx.mlx_array_free(x16);
 
     const N_arr = cachedScalarInt(N);
 
     const config = mlx.mlx_fast_metal_kernel_config_new();
     defer _ = mlx.mlx_fast_metal_kernel_config_free(config);
-    const y_shape = [_]c_int{ 16, N };
+    const y_shape = [_]c_int{ tile, N };
     try mlx.check(mlx.mlx_fast_metal_kernel_config_add_output_arg(config, &y_shape, 2, xd));
     try mlx.check(mlx.mlx_fast_metal_kernel_config_set_grid(config, 256, @divExact(N, 32), 1));
     try mlx.check(mlx.mlx_fast_metal_kernel_config_set_thread_group(config, 256, 1, 1));
@@ -2075,6 +2121,7 @@ fn runVerifyQmmNax(
     try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "BITS", @intCast(bits)));
     try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "GS", @intCast(group_size)));
     try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "KCONST", K));
+    try mlx.check(mlx.mlx_fast_metal_kernel_config_add_template_arg_int(config, "BMT", tile));
 
     const inputs_arr = [_]mlx.mlx_array{ x16, w, sc, bi, N_arr };
     const inputs_vec = mlx.mlx_vector_array_new_data(&inputs_arr, inputs_arr.len);
@@ -2090,7 +2137,7 @@ fn runVerifyQmmNax(
     try mlx.check(mlx.mlx_vector_array_get(&y16, outputs_vec, 0));
 
     // Drop the pad rows, restore the caller's leading shape with N last.
-    const ym = try naxSliceRows(s, y16, m, N);
+    const ym = try naxSliceRows(s, y16, m, tile, N);
     defer _ = mlx.mlx_array_free(ym);
 
     var out_shape_buf: [8]c_int = undefined;
@@ -7108,7 +7155,8 @@ pub const SlidingView = struct {
 
 var sliding_block_trim_logged: bool = false; // one-shot log guard
 var gdn_batched_logged: bool = false;
-var gdn_batched_verify_logged: bool = false;
+var per_slot_attn_logged: bool = false;
+var gdn_batched_verify_rows_logged: c_int = 0; // widest row total logged so far
 var row_axis_verify_logged: bool = false;
 var verify_fail_after_flush: ?usize = null;
 var verify_fault_after_ple_row: ?usize = null;
@@ -11334,6 +11382,59 @@ test "batched decode mask at verify width: row j of slot n sees its own causal p
         const v = d[(n * 3 + j) * 8 + pos];
         if (visible) try t.expectEqual(@as(f32, 0.0), v) else try t.expect(v == -std.math.inf(f32));
     };
+}
+
+test "per-slot batched attention equals the stacked arm on skewed slot lengths" {
+    if (mlx.noGpuBackend()) return error.SkipZigTest;
+    const t = std.testing;
+    var xfm: Transformer = undefined;
+    xfm.rht = null;
+    xfm.s = mlx.gpuStream();
+    xfm.allocator = t.allocator;
+    var prng = std.Random.DefaultPrng.init(0x51075);
+    const rnd = prng.random();
+    const lens = [_]c_int{ 37, 1500 };
+    var views: [2]DenseKVView = undefined;
+    var made: usize = 0;
+    defer for (views[0..made]) |dv| {
+        _ = mlx.mlx_array_free(dv.k);
+        _ = mlx.mlx_array_free(dv.v);
+    };
+    for (lens, 0..) |len, i| {
+        views[i] = .{
+            .k = try testRandWeightBf16(rnd, &[_]c_int{ 1, 4, len, 256 }, xfm.s),
+            .v = try testRandWeightBf16(rnd, &[_]c_int{ 1, 4, len, 256 }, xfm.s),
+            .owned = false,
+        };
+        made += 1;
+    }
+    for ([_]c_int{ 1, 4 }) |seq| {
+        const q = try testRandWeightBf16(rnd, &[_]c_int{ 2, 24, seq, 256 }, xfm.s);
+        defer _ = mlx.mlx_array_free(q);
+        const stacked = try xfm.stackedBatchedAttn(q, &views, seq, 0.0625, .{ .ctx = null });
+        defer _ = mlx.mlx_array_free(stacked);
+        const fused = [_]bool{ false, false };
+        const per_slot = try xfm.perSlotBatchedAttn(q, &views, &fused, seq, 0.0625);
+        defer _ = mlx.mlx_array_free(per_slot);
+        try t.expectEqualSlices(c_int, mlx.getShape(stacked), mlx.getShape(per_slot));
+        var diff = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(diff);
+        try mlx.check(mlx.mlx_subtract(&diff, stacked, per_slot, xfm.s));
+        var mag = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(mag);
+        try mlx.check(mlx.mlx_abs(&mag, diff, xfm.s));
+        var mx = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(mx);
+        try mlx.check(mlx.mlx_max(&mx, mag, false, xfm.s));
+        var mx32 = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(mx32);
+        try mlx.check(mlx.mlx_astype(&mx32, mx, .float32, xfm.s));
+        try mlx.check(mlx.mlx_array_eval(mx32));
+        var worst: f32 = 0;
+        try mlx.check(mlx.mlx_array_item_float32(&worst, mx32));
+        // Values are U(-0.5, 0.5) averages; two kernels agree to bf16 rounding.
+        try t.expect(worst < 5e-3);
+    }
 }
 
 test "batched decode mask is built in the query dtype: an f16 batch attends through it" {
@@ -19172,10 +19273,6 @@ pub const Transformer = struct {
         const none_mask = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(none_mask);
 
-        // Per-slot int32 kv-len buffer reused for the mask each layer.
-        var kv_len_buf = try self.allocator.alloc(i32, next_tokens.len);
-        defer self.allocator.free(kv_len_buf);
-
         var dt = mlx.DtypeTrace.begin("batched-decode", h, if (self.layers.len > 0) self.layers[0].q_w else null);
 
         for (0..cfg.num_hidden_layers) |layer_idx| {
@@ -19314,29 +19411,18 @@ pub const Transformer = struct {
                 self.allocator.free(dense_views);
             }
             for (dense_views) |*dv| dv.* = .{ .k = .{ .ctx = null }, .v = .{ .ctx = null }, .owned = false };
-            var kv_max: c_int = 0;
+            var fused_buf: [MAX_BATCH_ROWS]bool = undefined;
             for (ctxs, 0..) |slot_ctx, i| {
                 dense_views[i] = try slot_ctx.cache.denseView(view_layer, self.s);
-                const vshape = mlx.getShape(dense_views[i].k);
-                const klen: c_int = vshape[2];
-                kv_len_buf[i] = klen;
-                if (klen > kv_max) kv_max = klen;
+                fused_buf[i] = slot_ctx.kv_attn_fused;
             }
 
-            // Pad every slot view to [1, cur_kv_h, kv_max, cur_hd] and concat axis=0.
-            const stacked_k = try self.padAndStackBatchedKV(dense_views, true, kv_max);
-            defer _ = mlx.mlx_array_free(stacked_k);
-            const stacked_v = try self.padAndStackBatchedKV(dense_views, false, kv_max);
-            defer _ = mlx.mlx_array_free(stacked_v);
-
-            // Mask: positions [1,1,1,kv_max] vs kv_lens [N,1,1,1] → broadcast to [N,1,1,kv_max].
-            const stacked_mask = try self.buildBatchedDecodeMask(kv_len_buf, kv_max, 1, mlx.mlx_array_dtype(q_rope));
-            defer _ = mlx.mlx_array_free(stacked_mask);
-
             // SDPA → [N, h_count, 1, cur_hd].
-            var attn_out = mlx.mlx_array_new();
+            const attn_out = if (batchedAttnPerSlot(dense_views))
+                try self.perSlotBatchedAttn(q_rope, dense_views, fused_buf[0..ctxs.len], 1, attn_scale)
+            else
+                try self.stackedBatchedAttn(q_rope, dense_views, 1, attn_scale, .{ .ctx = null });
             defer _ = mlx.mlx_array_free(attn_out);
-            try mlx.check(mlx.mlx_fast_scaled_dot_product_attention(&attn_out, q_rope, stacked_k, stacked_v, attn_scale, "array", stacked_mask, .{ .ctx = null }, false, self.s));
 
             // Output projection.
             var attn_t = mlx.mlx_array_new();
@@ -19523,9 +19609,11 @@ pub const Transformer = struct {
         hidden_last: *mlx.mlx_array,
         hidden_all: *mlx.mlx_array,
     ) !mlx.mlx_array {
-        if (!gdn_batched_verify_logged) {
-            gdn_batched_verify_logged = true;
-            log.info("[batched] gdn batched verify engaged (slots={d}, width={d})\n", .{ ctxs.len, mlx.getShape(token_arr)[1] });
+        const width = mlx.getShape(token_arr)[1];
+        const rows = @as(c_int, @intCast(ctxs.len)) * width;
+        if (rows > gdn_batched_verify_rows_logged) {
+            gdn_batched_verify_rows_logged = rows;
+            log.info("[batched] gdn batched verify engaged (slots={d}, width={d})\n", .{ ctxs.len, width });
         }
         return self.forwardMoeBatchedRows(token_arr, ctxs, rope_offsets, true, hidden_last, hidden_all);
     }
@@ -19975,6 +20063,106 @@ pub const Transformer = struct {
             }
         }
         return true;
+    }
+
+    /// Longest slot view at or past which a batched group attends per slot: below it one
+    /// stacked dispatch is cheaper than N, above it the pad + concat copy dominates.
+    pub const BATCHED_PER_SLOT_ATTN_MIN_KV: c_int = 1024;
+
+    fn batchedAttnPerSlot(views: []const DenseKVView) bool {
+        for (views) |dv| if (mlx.getShape(dv.k)[2] >= BATCHED_PER_SLOT_ATTN_MIN_KV) return true;
+        return false;
+    }
+
+    /// The stacked batched read: every slot's view padded to the longest and concatenated,
+    /// one array-mask SDPA for the group. `narrow` (bool, null-ctx for none) removes more
+    /// positions from the pad mask.
+    fn stackedBatchedAttn(
+        self: *const Transformer,
+        q: mlx.mlx_array,
+        views: []const DenseKVView,
+        seq_len: c_int,
+        attn_scale: f32,
+        narrow: mlx.mlx_array,
+    ) !mlx.mlx_array {
+        var kv_len_buf: [MAX_BATCH_ROWS]i32 = undefined;
+        var kv_max: c_int = 0;
+        for (views, 0..) |dv, i| {
+            kv_len_buf[i] = mlx.getShape(dv.k)[2];
+            kv_max = @max(kv_max, kv_len_buf[i]);
+        }
+        const stacked_k = try self.padAndStackBatchedKV(views, true, kv_max);
+        defer _ = mlx.mlx_array_free(stacked_k);
+        const stacked_v = try self.padAndStackBatchedKV(views, false, kv_max);
+        defer _ = mlx.mlx_array_free(stacked_v);
+        var mask = try self.buildBatchedDecodeMask(kv_len_buf[0..views.len], kv_max, seq_len, mlx.mlx_array_dtype(q));
+        defer _ = mlx.mlx_array_free(mask);
+        if (narrow.ctx != null) {
+            const neg_inf = try scalarOf(-std.math.inf(f32), mlx.mlx_array_dtype(mask), self.s);
+            defer _ = mlx.mlx_array_free(neg_inf);
+            var narrowed = mlx.mlx_array_new();
+            try mlx.check(mlx.mlx_where(&narrowed, narrow, mask, neg_inf, self.s));
+            _ = mlx.mlx_array_free(mask);
+            mask = narrowed;
+        }
+        var out = mlx.mlx_array_new();
+        errdefer _ = mlx.mlx_array_free(out);
+        try mlx.check(mlx.mlx_fast_scaled_dot_product_attention(&out, q, stacked_k, stacked_v, attn_scale, "array", mask, .{ .ctx = null }, false, self.s));
+        return out;
+    }
+
+    /// The per-slot batched read: each slot's query rows attend its OWN view, so nothing is
+    /// padded, copied or masked, and the causal and quantized-KV kernels serve it as they
+    /// serve a solo slot. `fused[i]` is slot i's `ForwardCtx.kv_attn_fused`.
+    fn perSlotBatchedAttn(
+        self: *const Transformer,
+        q: mlx.mlx_array,
+        views: []const DenseKVView,
+        fused: []const bool,
+        seq_len: c_int,
+        attn_scale: f32,
+    ) !mlx.mlx_array {
+        const none_mask = mlx.mlx_array_new();
+        defer _ = mlx.mlx_array_free(none_mask);
+        var outs: [MAX_BATCH_ROWS]mlx.mlx_array = undefined;
+        var n: usize = 0;
+        defer for (outs[0..n]) |o| {
+            _ = mlx.mlx_array_free(o);
+        };
+        if (!per_slot_attn_logged) {
+            per_slot_attn_logged = true;
+            log.info("[batched] per-slot attention engaged (slots={d}, rows={d}): no KV pad or stack past {d} tokens\n", .{ views.len, seq_len, BATCHED_PER_SLOT_ATTN_MIN_KV });
+        }
+        for (views, 0..) |*dv, i| {
+            const q_i = try axisView(self.s, q, 0, i);
+            defer _ = mlx.mlx_array_free(q_i);
+            const mode: [:0]const u8 = if (seq_len > 1) "causal" else "";
+            var out: ?mlx.mlx_array = null;
+            if (fused[i] and kvAttnFusedEligible(dv, seq_len)) {
+                out = try qkvAttnDecodeKernel(self.s, q_i, dv, attn_scale, mode, none_mask);
+                if (out != null) logKvAttnFusedEngaged(dv, q_i, seq_len);
+            } else if (fused[i] and kvAttnVerifyEligible(dv, seq_len)) {
+                out = try qkvAttnVerifyKernel(self.s, q_i, dv, attn_scale, mode);
+            }
+            if (out == null and seq_len > 1) {
+                out = try fusedSdpa256Prefill(self.s, q_i, dv.k, dv.v, attn_scale, 0);
+                if (out == null) out = try splitCausalSdpa(self.s, q_i, dv.k, dv.v, attn_scale);
+            }
+            if (out == null) {
+                var o = mlx.mlx_array_new();
+                errdefer _ = mlx.mlx_array_free(o);
+                try mlx.check(mlx.mlx_fast_scaled_dot_product_attention(&o, q_i, dv.k, dv.v, attn_scale, mode.ptr, none_mask, .{ .ctx = null }, seq_len > 1 and sdpaForceFused(q_i, dv.k), self.s));
+                out = o;
+            }
+            outs[n] = out.?;
+            n += 1;
+        }
+        const vec = mlx.mlx_vector_array_new_data(&outs, n);
+        defer _ = mlx.mlx_vector_array_free(vec);
+        var joined = mlx.mlx_array_new();
+        errdefer _ = mlx.mlx_array_free(joined);
+        try mlx.check(mlx.mlx_concatenate_axis(&joined, vec, 0, self.s));
+        return joined;
     }
 
     // Pads each slot's dense KV view (shape [1, kv_h, kv_len_i, head_dim]) to a
@@ -25045,38 +25233,25 @@ pub const Transformer = struct {
                         self.allocator.free(dense_views);
                     }
                     for (dense_views) |*dv| dv.* = .{ .k = .{ .ctx = null }, .v = .{ .ctx = null }, .owned = false };
-                    const kv_len_buf = try self.allocator.alloc(i32, slots.len);
-                    defer self.allocator.free(kv_len_buf);
-                    var kv_max: c_int = 0;
+                    var fused_buf: [MAX_BATCH_ROWS]bool = undefined;
                     for (slots, 0..) |slot_ctx, i| {
                         dense_views[i] = try slot_ctx.cache.denseView(layer, self.s);
-                        const klen: c_int = mlx.getShape(dense_views[i].k)[2];
-                        kv_len_buf[i] = klen;
-                        if (klen > kv_max) kv_max = klen;
+                        fused_buf[i] = slot_ctx.kv_attn_fused;
                     }
-
-                    const stacked_k = try self.padAndStackBatchedKV(dense_views, true, kv_max);
-                    defer _ = mlx.mlx_array_free(stacked_k);
-                    const stacked_v = try self.padAndStackBatchedKV(dense_views, false, kv_max);
-                    defer _ = mlx.mlx_array_free(stacked_v);
-                    var stacked_mask = try self.buildBatchedDecodeMask(kv_len_buf, kv_max, seq_len, mlx.mlx_array_dtype(q_rope));
-                    defer _ = mlx.mlx_array_free(stacked_mask);
+                    _ = mlx.mlx_array_free(attn_out_b);
+                    attn_out_b = mlx.mlx_array_new();
                     if (ctx.qsa_mask.ctx != null) {
-                        // qwen4 QSA: the per-slot block selection (bool, false-
-                        // padded to kv_max) narrows the additive pad mask. One
-                        // dense-mask call serves the whole group, so it is billed
-                        // to every slot in it — the tally is per REQUEST.
+                        // qwen4 QSA: the per-slot block selection (bool, false-padded to
+                        // kv_max) narrows the pad mask. One dense-mask call serves the
+                        // whole group, so it is billed to every slot: the tally is per REQUEST.
                         noteQsaArmForSlots(slots, .mask);
                         if (self.cost_trace_active) self.cost_attention |= 16;
-                        const neg_inf = try scalarOf(-std.math.inf(f32), mlx.mlx_array_dtype(stacked_mask), self.s);
-                        defer _ = mlx.mlx_array_free(neg_inf);
-                        var narrowed = mlx.mlx_array_new();
-                        try mlx.check(mlx.mlx_where(&narrowed, ctx.qsa_mask, stacked_mask, neg_inf, self.s));
-                        _ = mlx.mlx_array_free(stacked_mask);
-                        stacked_mask = narrowed;
+                        attn_out_b = try self.stackedBatchedAttn(q_rope, dense_views, seq_len, attn_scale, ctx.qsa_mask);
+                    } else if (batchedAttnPerSlot(dense_views)) {
+                        attn_out_b = try self.perSlotBatchedAttn(q_rope, dense_views, fused_buf[0..slots.len], seq_len, attn_scale);
+                    } else {
+                        attn_out_b = try self.stackedBatchedAttn(q_rope, dense_views, seq_len, attn_scale, .{ .ctx = null });
                     }
-
-                    try mlx.check(mlx.mlx_fast_scaled_dot_product_attention(&attn_out_b, q_rope, stacked_k, stacked_v, attn_scale, "array", stacked_mask, .{ .ctx = null }, false, self.s));
                 }
             }
             return self.gatedAttnTail(attn_out_b, gate, fa, flat_shape, batch, is_prefill, layer, skip_output);
@@ -47242,12 +47417,18 @@ test "verifyQmm: split-K + msg + NAX verify-width kernels match stock qmm (4-bit
         // where the M5-class probe is live (todo-m5-nax.md §9.3) — the probe
         // self-gates, so plain-SIMD machines skip them.
         const simd_ms = [_]c_int{ 2, 3, 4, 5, 6, 7 };
-        const nax_ms = [_]c_int{ 8, 9, 12, 16 };
-        const total_ms: usize = if (verifyQmmNaxEnabled()) simd_ms.len + nax_ms.len else simd_ms.len;
+        // The M4 shader tile adds the 24-row tile (M 17..24).
+        const nax_ms = [_]c_int{ 8, 9, 12, 16, 17, 24 };
+        const tile_ms: usize = switch (verifyQmmTile()) {
+            .off => 0,
+            .nax => 4,
+            .shader => nax_ms.len,
+        };
+        const total_ms: usize = simd_ms.len + tile_ms;
         var mi: usize = 0;
         while (mi < total_ms) : (mi += 1) {
             const m = if (mi < simd_ms.len) simd_ms[mi] else nax_ms[mi - simd_ms.len];
-            const label: []const u8 = if (mi < simd_ms.len) "split-K" else "nax m16";
+            const label: []const u8 = if (mi < simd_ms.len) "split-K" else "matmul2d tile";
             const xn: usize = @intCast(m * cs.k);
             const xbuf = try allocator.alloc(f32, xn);
             defer allocator.free(xbuf);
@@ -47538,6 +47719,26 @@ test "vqmmLaneFor: NAX dispatch table (M 8..16 route to the m16 tile only when t
     try testing.expectEqual(VqmmLane.none, vqmmLaneFor(8, 5120, 1016, nax_off, 8, true)); // their host gate: N >= 1024
     try testing.expectEqual(VqmmLane.nax, vqmmLaneFor(8, 5120, 17408, nax_on, 8, true)); // NAX outranks
     try testing.expectEqual(VqmmLane.splitk, vqmmLaneFor(7, 5120, 17408, nax_off, 8, true));
+}
+
+test "verifyQmm lane table: the M4 shader tile serves M 8..24 in 8-row steps" {
+    try testing.expectEqual(VqmmTile.shader, vqmmTileFrom(false, "applegpu_g16s", "26.5"));
+    try testing.expectEqual(VqmmTile.off, vqmmTileFrom(false, "applegpu_g16s", "26.1"));
+    try testing.expectEqual(VqmmTile.off, vqmmTileFrom(false, "applegpu_g15d", "26.5")); // unmeasured
+    try testing.expectEqual(VqmmTile.off, vqmmTileFrom(false, "applegpu_g16p", "26.5")); // phone: unmeasured
+    try testing.expectEqual(VqmmTile.nax, vqmmTileFrom(true, "applegpu_g17s", "26.5"));
+
+    try testing.expectEqual(VqmmLane.splitk, vqmmLaneForTile(7, 5120, 17408, .shader, 8, false));
+    for ([_]c_int{ 8, 12, 16, 17, 24 }) |m| try testing.expectEqual(VqmmLane.nax, vqmmLaneForTile(m, 5120, 17408, .shader, 8, false));
+    try testing.expectEqual(VqmmLane.none, vqmmLaneForTile(25, 5120, 17408, .shader, 8, false));
+    try testing.expectEqual(VqmmLane.none, vqmmLaneForTile(12, 5184, 17408, .shader, 8, false)); // K % 256
+    // The M5 tile keeps its 16-row ceiling.
+    try testing.expectEqual(VqmmLane.none, vqmmLaneForTile(17, 5120, 17408, .nax, 8, false));
+
+    try testing.expectEqual(@as(c_int, 8), vqmmTileRows(.shader, 8));
+    try testing.expectEqual(@as(c_int, 16), vqmmTileRows(.shader, 9));
+    try testing.expectEqual(@as(c_int, 24), vqmmTileRows(.shader, 17));
+    try testing.expectEqual(@as(c_int, 16), vqmmTileRows(.nax, 8));
 }
 
 test "verifyQmm: crossrow M 8/9 lane matches stock qmm (4-bit g64, opt-in)" {
@@ -48050,7 +48251,7 @@ test "naxMinMForBitsFrom: q8 defaults to measured M7 and explicit override wins"
 
 test "NAX host scaffolding: zero-pad to 16 rows + slice-back are exact (runs off-M5)" {
     // The half of runVerifyQmmNax that CAN execute without G17 hardware —
-    // the exact production helpers (naxPadTo16 / naxSliceRows) wrapped
+    // the exact production helpers (naxPadRows / naxSliceRows) wrapped
     // around STOCK qmm standing in for the NAX kernel. Pins the mlx_pad
     // axis/value plumbing (pad rows are EXACT zeros in the activation
     // dtype, real rows byte-preserved), the slice bounds, and that zero
@@ -48092,7 +48293,7 @@ test "NAX host scaffolding: zero-pad to 16 rows + slice-back are exact (runs off
         try mlx.check(mlx.mlx_astype(&x, x32, .bfloat16, s));
 
         // Pad half: [1, m, K] → [16, K]; real rows byte-preserved, pad rows 0.
-        const x16 = try naxPadTo16(s, x, m, K, .bfloat16);
+        const x16 = try naxPadRows(s, x, m, 16, K, .bfloat16);
         defer _ = mlx.mlx_array_free(x16);
         const psh = mlx.getShape(x16);
         try testing.expectEqual(@as(usize, 2), psh.len);
@@ -48118,7 +48319,7 @@ test "NAX host scaffolding: zero-pad to 16 rows + slice-back are exact (runs off
         var y16 = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(y16);
         try mlx.check(mlx.mlx_quantized_matmul(&y16, x16, wq, wsc, wbi, true, mlx.mlx_optional_int.some(@intCast(gs)), mlx.mlx_optional_int.some(4), "affine", s));
-        const ym = try naxSliceRows(s, y16, m, N);
+        const ym = try naxSliceRows(s, y16, m, 16, N);
         defer _ = mlx.mlx_array_free(ym);
         const ysh = mlx.getShape(ym);
         try testing.expectEqual(@as(usize, 2), ysh.len);
@@ -49048,7 +49249,7 @@ test "verifyQmm µbench: kernel vs stock per 27B shape (MLX_SERVE_VQMM_UBENCH=1)
         .{ .name = "out", .k = 6144, .n = 5120, .per_fwd = 64 },
         .{ .name = "lm_head", .k = 5120, .n = 248320, .per_fwd = 1 },
     };
-    const widths = [_]c_int{ 1, 4, 6, 8, 12, 16 };
+    const widths = [_]c_int{ 1, 4, 8, 12, 16, 24, 32 };
     var stock_tot: [widths.len]f64 = @splat(0);
     var kern_tot: [widths.len]f64 = @splat(0);
     var flops: [widths.len]f64 = @splat(0);

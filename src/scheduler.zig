@@ -2353,6 +2353,20 @@ pub fn batchedKvKeepCount(kv_lens_asc: []const u32) usize {
     return 0;
 }
 
+/// `batchedKvKeepCount` for a group whose forward may attend per slot: past the per-slot
+/// floor nothing is padded, so every slot batches.
+pub fn groupKeepCount(kv_lens_asc: []const u32, per_slot_capable: bool) usize {
+    if (per_slot_capable and kv_lens_asc.len >= 2 and
+        kv_lens_asc[kv_lens_asc.len - 1] >= transformer_mod.Transformer.BATCHED_PER_SLOT_ATTN_MIN_KV) return kv_lens_asc.len;
+    return batchedKvKeepCount(kv_lens_asc);
+}
+
+/// The per-slot attention arm serves every batched trunk but qwen4's QSA reads.
+fn groupAttendsPerSlot(slot: *const Slot) bool {
+    const cfg = slot.model.config orelse return true;
+    return !cfg.longCtxGated();
+}
+
 /// The padding waste the whole group would pay; reported by the cap's log.
 pub fn batchedPadWaste(kv_lens_asc: []const u32) f64 {
     var sum: u64 = 0;
@@ -2371,11 +2385,9 @@ pub fn batchKvLenOf(cache: *const KVCache, cfg: ?*const model_mod.ModelConfig) u
 }
 
 pub fn batchKvLenOfWith(cache: *const KVCache, cfg: ?*const model_mod.ModelConfig, seq_len: c_int, any_mrope: bool) u32 {
-    // Arch gate: the multi-stream batched wins on the 27B were measured with the cap dead,
-    // so every other arch keeps `cache.step` (and the dead cap) pending a measurement.
-    const c = cfg orelse return @intCast(cache.step);
-    if (!c.longCtxGated()) return @intCast(cache.step);
     const raw: u32 = @intCast(cache.kvLenForBatching());
+    const c = cfg orelse return raw;
+    if (!c.longCtxGated()) return raw;
     const gather_on = transformer_mod.qsaBatchedGatherOn(seq_len, any_mrope);
     const min_kv: u32 = @intCast(transformer_mod.qsaBatchedGatherFloor(seq_len, cache.config.scheme == .affine));
     return c.batchedEffectiveKvLen(raw, gather_on, min_kv);
@@ -6530,8 +6542,6 @@ fn runDecodeTick(sch: *Scheduler, active: []*Slot) !void {
         var end = start + 1;
         while (end < batchable_n and batchable_buf[end].model == batchable_buf[start].model) end += 1;
         var group = batchable_buf[start..end];
-        // One predicate for both halves of the pad-waste change: the kv-length rule and the sort.
-        const gate_batch_kv_len = if (group[0].model.config) |c| c.longCtxGated() else false;
         // Cap the group by padding waste: the batched kernel pads every slot's
         // KV to the longest in the group, so one long-context stream would make
         // its short neighbours build a tensor orders of magnitude bigger than
@@ -6539,9 +6549,7 @@ fn runDecodeTick(sch: *Scheduler, active: []*Slot) !void {
         // how many still fit; the tail decodes serially this tick.
         if (group.len >= 2) {
             var kv_lens: [32]u32 = undefined;
-            // The stable insertion sort is part of the change: `std.sort.pdq` is unstable and
-            // off qwen4_exp every key is `cache.step` == 0, so the sort decides the ordering.
-            if (gate_batch_kv_len) {
+            {
                 var caches_buf: [MAX_BATCH_GROUP]*const KVCache = undefined;
                 var mrope_buf: [MAX_BATCH_GROUP]bool = undefined;
                 for (group, 0..) |g, i| {
@@ -6562,15 +6570,8 @@ fn runDecodeTick(sch: *Scheduler, active: []*Slot) !void {
                     group[j] = slot_i;
                     kv_lens[j] = len_i;
                 }
-            } else {
-                std.sort.pdq(*Slot, group, {}, struct {
-                    fn lt(_: void, a: *Slot, b: *Slot) bool {
-                        return a.cache.step < b.cache.step;
-                    }
-                }.lt);
-                for (group, 0..) |g, i| kv_lens[i] = @intCast(g.cache.step);
             }
-            const keep = batchedKvKeepCount(kv_lens[0..group.len]);
+            const keep = groupKeepCount(kv_lens[0..group.len], groupAttendsPerSlot(group[0]));
             if (keep < group.len) {
                 if (!kv_skew_split_logged) {
                     kv_skew_split_logged = true;
@@ -7921,7 +7922,7 @@ fn runMtpGroups(sch: *Scheduler, slots: []*Slot) !void {
                 group[j] = slot_i;
                 kv_lens[j] = len_i;
             }
-            const keep = batchedKvKeepCount(kv_lens[0..group.len]);
+            const keep = groupKeepCount(kv_lens[0..group.len], groupAttendsPerSlot(group[0]));
             for (group[keep..]) |s| {
                 noteSerial(sch, s, .pad_waste);
                 try runSingleDecodeTick(sch, s);
@@ -7932,11 +7933,15 @@ fn runMtpGroups(sch: *Scheduler, slots: []*Slot) !void {
         var g0: usize = 0;
         while (g0 < group.len) {
             const rem = group.len - g0;
-            const size = mtpSubGroupSize(rem, mtpGroupRowCap());
+            const plan = mtpSubGroupPlan(rem, transformer_mod.verifyQmmTile());
+            const size = plan.size;
             const sub = group[g0 .. g0 + size];
             if (size >= 2) {
-                const cap = mtpGroupRowCap() / @as(u32, @intCast(size)) - 1;
-                for (sub) |slot| slot.legacy_gen.?.mtp_group_cap = cap;
+                const cap = plan.depthCap();
+                for (sub) |slot| {
+                    slot.legacy_gen.?.mtp_group_cap = cap;
+                    slot.legacy_gen.?.mtp_group_fill = plan.fill;
+                }
                 try runBatchedMtpTick(sch, sub);
             } else {
                 sub[0].legacy_gen.?.mtp_group_cap = 0;
@@ -7948,16 +7953,39 @@ fn runMtpGroups(sch: *Scheduler, slots: []*Slot) !void {
     }
 }
 
-/// Rows one batched verify may carry: past 7 the projections leave the split-K lane for
-/// stock kernels; the NAX m16 tile carries 16.
-fn mtpGroupRowCap() u32 {
-    return if (dflash_mod.wideVerifyLaneAvailable()) 16 else 7;
-}
-
 /// MTP slots on one model at or past this count decode on the plain batched tick instead:
 /// sub-grouped verify rounds lose to one plain tick there.
 fn mtpCrowdThreshold() usize {
-    return mtpSubGroupSize(std.math.maxInt(usize), mtpGroupRowCap()) + 1;
+    return mtpCrowdThresholdForTile(transformer_mod.verifyQmmTile());
+}
+
+pub fn mtpCrowdThresholdForTile(tile: transformer_mod.VqmmTile) usize {
+    return mtpSubGroupPlan(std.math.maxInt(usize), tile).size + 1;
+}
+
+pub const SubGroup = struct {
+    size: usize,
+    /// Rows the batched verify may carry: 7 keeps the projections on the split-K lane,
+    /// 16 is one matmul2d tile.
+    row_cap: u32,
+    /// The rows are one fixed-cost tile: every lane drafts to `depthCap`.
+    fill: bool = false,
+
+    pub fn depthCap(self: SubGroup) u32 {
+        return self.row_cap / @as(u32, @intCast(@max(self.size, 1))) - 1;
+    }
+};
+
+/// The next sub-group. The M5 tile takes up to four lanes at any count. The M4 shader tile
+/// costs a fixed 16 rows, which two or three lanes cannot fill with drafts worth verifying,
+/// so it starts at four lanes and carries up to eight at depth 1.
+pub fn mtpSubGroupPlan(remaining: usize, tile: transformer_mod.VqmmTile) SubGroup {
+    switch (tile) {
+        .nax => return .{ .size = mtpSubGroupSize(remaining, 16), .row_cap = 16 },
+        .shader => if (remaining >= 4) return .{ .size = @min(remaining, 8), .row_cap = 16, .fill = true },
+        .off => {},
+    }
+    return .{ .size = mtpSubGroupSize(remaining, 7), .row_cap = 7 };
 }
 
 /// Slots in the next sub-group: two at depth 2 or three at depth 1 fill 7 rows; four is
@@ -8534,9 +8562,17 @@ test "the batched group is capped by padding waste before it is dispatched" {
     const start = std.mem.indexOf(u8, src, "// Group batchable slots by model pointer") orelse return error.MissingGrouping;
     const end = std.mem.indexOfPos(u8, src, start, "\n}\n") orelse return error.MissingGroupingEnd;
     const body = src[start..end];
-    try testing.expect(std.mem.indexOf(u8, body, "batchedKvKeepCount(") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "groupKeepCount(") != null);
     // ...and the dropped slots must still be ticked, or they never advance.
     try testing.expect(std.mem.indexOf(u8, body, "noteSerial(sch, s, .pad_waste)") != null);
+}
+
+test "groupKeepCount: a group that attends per slot pads nothing, so the cap is the stacked arm's" {
+    const skew = [_]u32{ 1000, 1000, 1000, 100_000 };
+    try testing.expectEqual(@as(usize, 3), groupKeepCount(&skew, false));
+    try testing.expectEqual(@as(usize, 4), groupKeepCount(&skew, true));
+    // Below the per-slot floor the stacked arm runs and its cap holds.
+    try testing.expectEqual(@as(usize, 0), groupKeepCount(&[_]u32{ 10, 900 }, true));
 }
 
 test "the pad-waste cap reads the arch's TRUE attention KV length, not cache.step" {
@@ -8559,12 +8595,12 @@ test "the pad-waste cap reads the arch's TRUE attention KV length, not cache.ste
     for (caches[0..], 0..) |*c, i| kv_lens[i] = batchKvLenOf(c, &q4);
     try testing.expectEqualSlices(u32, &[_]u32{ 1_000, 1_000, 60_000 }, &kv_lens);
 
-    // Every other hybrid keeps `cache.step` (the cap stays dead there, pending a multi-stream measurement).
+    // Every linear-layer-0 trunk reads the same length: four equal slots must all keep batching.
     for ([_][]const u8{ "qwen3_5", "qwen3_5_moe", "qwen3_next", "lfm2", "nemotron_h", "bailing_hybrid" }) |mt| {
         var cfg = model_mod.ModelConfig{ .model_type = mt };
-        for (caches[0..]) |*c| try testing.expectEqual(@as(u32, 0), batchKvLenOf(c, &cfg));
+        for (caches[0..], lens) |*c, len| try testing.expectEqual(@as(u32, @intCast(len)), batchKvLenOf(c, &cfg));
     }
-    for (caches[0..]) |*c| try testing.expectEqual(@as(u32, 0), batchKvLenOf(c, null));
+    for (caches[0..], lens) |*c, len| try testing.expectEqual(@as(u32, @intCast(len)), batchKvLenOf(c, null));
 
     try testing.expectEqual(@as(usize, 2), batchedKvKeepCount(&kv_lens));
     try testing.expect(batchedPadWaste(&kv_lens) > MAX_PAD_WASTE);
@@ -9570,6 +9606,26 @@ test "mtpSubGroupSize fills the verify lane's row budget" {
     try testing.expectEqual(@as(usize, 2), mtpSubGroupSize(4, 7));
     try testing.expectEqual(@as(usize, 3), mtpSubGroupSize(5, 7));
     try testing.expectEqual(@as(usize, 4), mtpSubGroupSize(9, 16));
+}
+
+test "mtpSubGroupPlan: four or more lanes share one 16-row verify on the M4 shader tile" {
+    // No tile: the split-K budget, 2+2 at four lanes, plain tick from four.
+    try testing.expectEqual(SubGroup{ .size = 2, .row_cap = 7 }, mtpSubGroupPlan(4, .off));
+    try testing.expectEqual(@as(usize, 4), mtpCrowdThresholdForTile(.off));
+    // M5 tile: unchanged.
+    try testing.expectEqual(SubGroup{ .size = 4, .row_cap = 16 }, mtpSubGroupPlan(9, .nax));
+    try testing.expectEqual(SubGroup{ .size = 2, .row_cap = 16 }, mtpSubGroupPlan(2, .nax));
+    try testing.expectEqual(@as(usize, 5), mtpCrowdThresholdForTile(.nax));
+    // Shader tile: a 16-row tile costs more than two lanes are worth, so 2..3 lanes stay narrow.
+    try testing.expectEqual(SubGroup{ .size = 2, .row_cap = 7 }, mtpSubGroupPlan(2, .shader));
+    try testing.expectEqual(SubGroup{ .size = 3, .row_cap = 7 }, mtpSubGroupPlan(3, .shader));
+    try testing.expectEqual(SubGroup{ .size = 4, .row_cap = 16, .fill = true }, mtpSubGroupPlan(4, .shader));
+    try testing.expectEqual(SubGroup{ .size = 8, .row_cap = 16, .fill = true }, mtpSubGroupPlan(11, .shader));
+    try testing.expectEqual(@as(usize, 9), mtpCrowdThresholdForTile(.shader));
+    // Depth per lane: 16 rows over four lanes is [t1 + 3 drafts] each.
+    try testing.expectEqual(@as(u32, 3), mtpSubGroupPlan(4, .shader).depthCap());
+    try testing.expectEqual(@as(u32, 1), mtpSubGroupPlan(8, .shader).depthCap());
+    try testing.expectEqual(@as(u32, 2), mtpSubGroupPlan(2, .shader).depthCap());
     // The depth each sub-group gets: floor(rows / size) - 1.
     try testing.expectEqual(@as(u32, 2), 7 / @as(u32, 2) - 1);
     try testing.expectEqual(@as(u32, 1), 7 / @as(u32, 3) - 1);
