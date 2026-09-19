@@ -28,6 +28,21 @@ see "Final state" below; the earlier "Remaining work" list is complete.
   `a29c2f49f8c158b4c1b8933ae37d4d81e73968e6`
   (force-pushed with lease `feat/in-app-language-switcher:c7050291…`).
 - Bot reply posted: https://github.com/ddalcu/mlx-serve/pull/464#issuecomment-5740455914
+- Coordinator caught an overclaim in that reply ("a guard for the class").
+  Corrected by PATCHing the same comment in place (id 5740455914, no new
+  comment). It now states: the tightened test rejects interpolated literals
+  reaching a *lookup* helper and stops a consumer regressing back to a lookup,
+  but it does NOT guard the verbatim shape (a producer that skips
+  `L10n.format` for a consumer that renders verbatim) because those consumers
+  are no longer detected as lookup helpers — that shape is currently unguarded.
+  Reproduced: reverting only `ChatView.swift` fileChip's call site to
+  `"PDF · \(pdf.text.count) chars"` and running the filtered test passes 7/7.
+- PR #464 body also corrected (no overclaim was present, but it was stale):
+  base line now says rebased/4 ahead, catalog count 1670, follow-up commit and
+  the unguarded shape named, checklist item reworded to "no new source-scan
+  tests; one grandfathered one was tightened".
+- No new source-scanning guard was built (CONTRIBUTING forbids it; the
+  verbatim shape needs a data-vs-copy allow-list — separate decision).
 - Fail-before proof done: the modified LocalizationTests test fails on
   `1c40f849` (flags `fileChip` "PDF · \(…) chars" / "Video · \(…) frames") and
   passes on `51f5cf5`. Pre-fix worktree was removed.
