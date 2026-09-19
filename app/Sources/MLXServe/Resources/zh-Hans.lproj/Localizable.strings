@@ -1634,7 +1634,7 @@
 "the bundled guest is missing vsock support or the vz-agent binary — the app bundle is incomplete" = "内置客户机缺少 vsock 支持或 vz-agent 二进制 —— 应用包不完整";
 "the guest network never came up — no ssh mirror on localhost:%lld" = "客户机网络未能启动 —— localhost:%lld 上没有 ssh 映射";
 "the sandbox guest has no ssh channel — turn on guest networking in Settings → Agent Sandbox" = "沙盒客户机没有 ssh 通道 —— 请在 设置 → Agent 沙盒 中开启客户机网络";
-"the sandboxed agent" = "沙箱代理";
+"the sandboxed agent" = "沙盒中的 Agent";
 "the server isn't running — load a model first; %@ talks to it" = "服务器未运行 —— 请先加载一个模型，%@ 要与它通信";
 "tool approval" = "工具审批";
 "trying a different URL or using webSearch" = "换一个 URL，或改用 webSearch";
