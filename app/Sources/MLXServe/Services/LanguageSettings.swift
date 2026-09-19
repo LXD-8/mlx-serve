@@ -99,7 +99,13 @@ enum BundleLanguageOverride {
     /// same thing for the catalog).
     static func apply(_ language: AppLanguage, in host: Bundle = .main) {
         _ = installOnce
-        languageBundle = language.code.flatMap { bundle(for: $0, in: host) }
+        let resolved = language.code.flatMap { bundle(for: $0, in: host) }
+        // A reapply of the same language is not an invalidation: every scene
+        // calls this on appear, and bumping then would re-run every `L10n`
+        // body for nothing. Only a real swap is news.
+        guard languageBundle?.bundlePath != resolved?.bundlePath else { return }
+        languageBundle = resolved
+        LanguageLookupRevision.shared.bump()
     }
 }
 
