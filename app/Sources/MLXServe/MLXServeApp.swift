@@ -33,6 +33,15 @@ struct MLXCoreApp: App {
     /// The View ▸ Interface menu writes the same keys the Settings rows do.
     @AppStorage(InterfacePrefKey.chatColumn) private var chatColumnRaw = ChatColumnWidth.wide.rawValue
     @AppStorage(InterfacePrefKey.compactMode) private var compactMode = false
+    /// The command menus below are `LocalizedStringKey` literals, so SwiftUI
+    /// resolves them through `Bundle.main` when this body builds them — but
+    /// nothing here reads `LanguageLookupRevision` (the commands never call
+    /// `L10n`), so they have no invalidation of their own. This preference is
+    /// their refresh: `AppLanguage.select` swaps the bundle and then writes
+    /// the key, which invalidates this body and rebuilds Agent/Tools/… against
+    /// the new `.lproj`. Without it a live switch left the menus in the old
+    /// language until relaunch (when `init()` applies the bundle again).
+    @AppStorage(InterfacePrefKey.language) private var languageRaw = AppLanguage.system.rawValue
     /// The menu bar and every `CommandMenu` are built before the first
     /// window's `.appChrome()` runs, so the launch-time language is applied
     /// here as well as per scene (both are cheap and idempotent).
@@ -87,6 +96,12 @@ struct MLXCoreApp: App {
     }
 
     var body: some Scene {
+        // Read, not used: this is what ties the command menus built below to
+        // `languageRaw`, so a live switch re-evaluates this body (and rebuilds
+        // the menus) instead of waiting for the next launch. The window copy
+        // rides `LanguageLookupRevision`; the literal commands cannot.
+        let _ = languageRaw
+
         MenuBarExtra {
             StatusMenuView(
                 openChat: { appState.showChat() },
