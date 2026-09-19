@@ -8,7 +8,6 @@
 " Your Telegram bot token is kept, since only @BotFather can reissue it." = " 你的 Telegram bot 令牌会保留，因为只有 @BotFather 才能重新签发。";
 " — trimmed to the video length" = " —— 已裁剪至视频长度";
 "\"Last model used\" follows whatever you were last chatting with, decided when the app starts rather than when you set this — so it keeps up as you switch models. \"Always this model\" pins one regardless." = "「上次使用的模型」跟随你最近聊过的模型，在应用启动时确定，而不是在你设置时确定——因此你切换模型后它会跟着变。「始终使用此模型」则固定一个模型，不受切换影响。";
-"%@ (Telegram)" = "%@（Telegram）";
 "%@ (network)" = "%@（网络）";
 "%@ available" = "%@ 个可用";
 "%@ chat column" = "%@ 聊天栏";
@@ -21,7 +20,6 @@
 "%@ needs approval" = "%@ 需要批准";
 "%@ now · %@ avg tok/s" = "当前 %@ · 平均 %@ tok/s";
 "%@ of memory · about %@ usable for models" = "%@ 内存 · 约 %@ 可供模型使用";
-"%@ tok/sec" = "%@ tok/s";
 "%@ token%@" = "%@ 个 Token";
 "%@ total" = "%@ 总计";
 "%@ · file no longer on disk" = "%@ · 文件已不在磁盘上";
@@ -44,6 +42,8 @@
 "%lld session%@" = "%lld 个会话";
 "%lld source%@" = "%lld 个来源";
 "%lld steps" = "%lld 步";
+"%lld tok/sec" = "%lld tok/s";
+"%lld tok/sec (%lld tokens)" = "%lld tok/s（%lld 个 Token）";
 "%lld token%@" = "%lld 个 Token";
 "%lld tool%@" = "%lld 个工具";
 "%lld windows joined end to end — about %lld frames, and roughly %lldx the time of a single window." = "%lld 个窗口首尾相接 —— 约 %lld 帧，耗时约为单个窗口的 %lld 倍。";
@@ -1376,7 +1376,6 @@
 "Talking character (dialogue)" = "说话的角色（对白）";
 "Tap to interrupt" = "点击打断";
 "Task completed." = "任务已完成。";
-"Task: %@" = "任务：%@";
 "Tasks" = "任务";
 "Telegram conversation (view only)" = "Telegram 会话（仅供查看）";
 "Telegram conversation — view only. Reply from your phone." = "Telegram 会话 —— 仅可查看。请在手机上回复。";

@@ -4642,10 +4642,14 @@ struct MessageBubble: View {
             }
 
             if let tps = message.tokensPerSecond, tps > 0 {
-                StatPill(text: "\(Int(tps)) tok/sec",
+                // The format moves to the producer: `StatPill` renders its
+                // strings verbatim, so a lookup of an already-built `"42 tok/sec"`
+                // could never match a `%lld` key. Same shape as `ComposerTip`.
+                let speed = L10n.format("%lld tok/sec", Int(tps))
+                StatPill(text: speed,
                          expanded: message.completionTokens.map {
-                             "\(Int(tps)) tok/sec (\($0) tokens)"
-                         } ?? "\(Int(tps)) tok/sec")
+                             L10n.format("%lld tok/sec (%lld tokens)", Int(tps), $0)
+                         } ?? speed)
             }
 
             Spacer(minLength: 0)
@@ -4779,7 +4783,10 @@ private struct StatPill: View {
     }
 
     private func label(_ string: String) -> some View {
-        Text(L10n.text(string))
+        // Verbatim: both callers hand in finished text — timestamps already
+        // formatted by Foundation, and the tok/sec sentence localized by the
+        // producer — so a catalog lookup here would re-key the result.
+        Text(string)
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
             .lineLimit(1)
