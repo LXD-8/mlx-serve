@@ -59,8 +59,13 @@ final class TaskNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     func notifyNeedsApproval(task: ScheduledTask, run: TaskRun) {
         let tool = run.pendingApproval?.toolName ?? L10n.text("a tool")
+        // The joining period and the reason slot live INSIDE the key: a
+        // sentence terminated outside the catalog keeps an ASCII full stop no
+        // translator can change (`想要运行“ls”. …` beside the full-width 。 the
+        // rest of the Chinese copy uses).
+        let reason = run.pendingApproval?.reason ?? ""
         post(title: L10n.format("%@ needs approval", task.title),
-             body: L10n.format("Wants to run “%@”", tool) + ". \(run.pendingApproval?.reason ?? "")",
+             body: L10n.format("Wants to run “%@”. %@", tool, reason),
              category: Self.approvalCategory, task: task, run: run)
     }
 
