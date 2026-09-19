@@ -8,6 +8,7 @@
 " Your Telegram bot token is kept, since only @BotFather can reissue it." = " 你的 Telegram bot 令牌会保留，因为只有 @BotFather 才能重新签发。";
 " — trimmed to the video length" = " —— 已裁剪至视频长度";
 "\"Last model used\" follows whatever you were last chatting with, decided when the app starts rather than when you set this — so it keeps up as you switch models. \"Always this model\" pins one regardless." = "「上次使用的模型」跟随你最近聊过的模型，在应用启动时确定，而不是在你设置时确定——因此你切换模型后它会跟着变。「始终使用此模型」则固定一个模型，不受切换影响。";
+"%@ (Settings)" = "%@（设置）";
 "%@ (network)" = "%@（网络）";
 "%@ available" = "%@ 个可用";
 "%@ chat column" = "%@ 聊天栏";
@@ -203,6 +204,7 @@
 "Audio & Music" = "音频与音乐";
 "Audio generation" = "音频生成";
 "Audio guidance" = "音频引导";
+"Audio · %.1fs" = "音频 · %.1fs";
 "Authorization Header" = "Authorization 请求头";
 "Authorization was cancelled." = "授权已取消。";
 "Auto" = "自动";
@@ -1449,7 +1451,7 @@
 "This model is distilled for %@ steps; other values cost time without adding detail." = "该模型是按 %@ 步蒸馏的；其他步数只会耗时，不会增加细节。";
 "This model is distilled for %lld steps; other values cost time without adding detail." = "此模型按 %lld 步蒸馏；其他取值只会更慢而不会增加细节。";
 "This model is loaded and serving requests." = "该模型已加载并正在处理请求。";
-"This model is serving %lld of context; the ladder needs %lld. Raise it in Settings ▸ Context." = "当前模型提供 %lld 的上下文；阶梯测试需要 %lld。请在设置 ▸ 上下文中提高。";
+"This model is serving %@ of context; the ladder needs %@. Raise it in Settings ▸ Context." = "当前模型提供 %@ 的上下文；阶梯测试需要 %@。请在设置 ▸ 上下文中提高。";
 "This model samples between %lld and %lld px per side. %lld is outside that." = "此模型的边长采样范围为 %lld 到 %lld 像素，%lld 超出该范围。";
 "This model will load when you start the server." = "该模型会在你启动服务器时加载。";
 "This model writes its own soundtrack. Describe it in the prompt after \"overall_soundscape:\" (and \"non_diegetic_music:\" for score)." = "这个模型会自行创作配乐。请在提示词中的 “overall_soundscape:” 后面描述它（配乐则写在 “non_diegetic_music:” 后面）。";

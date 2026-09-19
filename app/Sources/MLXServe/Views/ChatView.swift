@@ -166,16 +166,19 @@ private struct AttachmentPreviewRow: View {
                 ForEach(Array(images.enumerated()), id: \.offset) { idx, pending in
                     imageChip(idx: idx, img: pending.image)
                 }
+                // Each `detail` is localized by its producer, not by `fileChip`:
+                // a format key has to be completed BEFORE the catalog lookup, or
+                // the lookup keys on the finished sentence and can never match.
                 ForEach(Array(pdfs.enumerated()), id: \.offset) { idx, pdf in
-                    fileChip(idx: idx, name: pdf.name, detail: "PDF · \(pdf.text.count) chars",
+                    fileChip(idx: idx, name: pdf.name, detail: L10n.format("PDF · %lld chars", pdf.text.count),
                              icon: "doc.text.fill", tint: .red) { pdfs.remove(at: idx) }
                 }
                 ForEach(Array(videos.enumerated()), id: \.offset) { idx, vid in
-                    fileChip(idx: idx, name: vid.name, detail: "Video · \(vid.frameCount) frames",
+                    fileChip(idx: idx, name: vid.name, detail: L10n.format("Video · %lld frames", vid.frameCount),
                              icon: "video.fill", tint: .orange) { videos.remove(at: idx) }
                 }
                 ForEach(Array(audio.enumerated()), id: \.offset) { idx, clip in
-                    fileChip(idx: idx, name: clip.name, detail: String(format: "Audio · %.1fs", clip.durationSeconds),
+                    fileChip(idx: idx, name: clip.name, detail: L10n.format("Audio · %.1fs", clip.durationSeconds),
                              icon: "waveform", tint: .purple) { audio.remove(at: idx) }
                 }
             }
@@ -222,7 +225,9 @@ private struct AttachmentPreviewRow: View {
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(L10n.text(detail))
+                    // Verbatim: every caller hands in text its producer already
+                    // localized, so a lookup here would re-key the sentence.
+                    Text(detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
