@@ -13,9 +13,25 @@ and #464 current by rebasing each onto the current `origin/main`.
 Repo clone: `/Users/li/work/mlx-serve` (origin = ddalcu/mlx-serve,
 fork = LXD-8/mlx-serve). `gh` needs
 `/Users/li/Library/Application Support/CherryStudio/Toolchain/mise/shims` on PATH.
-Main clone is on branch `i18n/zh-hans-copy`. Tree is CLEAN as of this note
-(written at local commit `51f5cf5`, before the scratch commit that adds this
-file). No rebase in progress.
+Main clone is on branch `i18n/zh-hans-copy` (when not on this scratch branch).
+Tree is CLEAN as of this note. No rebase in progress. This note was updated
+AFTER all three PR branches were force-pushed and the bot reply was posted —
+see "Final state" below; the earlier "Remaining work" list is complete.
+
+## Final state (all pushed, all green)
+
+- PR #464 `i18n/zh-hans-copy` -> `51f5cf59bbc35d833eb24ce113eb39239abd8d12`
+  (force-pushed with lease `i18n/zh-hans-copy:1c40f849…`).
+- PR #463 `i18n/appkit-dialogs` -> `4b94b6ad46ced87308e180bf7f82dbd0c8d35dd7`
+  (force-pushed with lease `i18n/appkit-dialogs:53f4316d…`).
+- PR #462 `feat/in-app-language-switcher` ->
+  `a29c2f49f8c158b4c1b8933ae37d4d81e73968e6`
+  (force-pushed with lease `feat/in-app-language-switcher:c7050291…`).
+- Bot reply posted: https://github.com/ddalcu/mlx-serve/pull/464#issuecomment-5740455914
+- Fail-before proof done: the modified LocalizationTests test fails on
+  `1c40f849` (flags `fileChip` "PDF · \(…) chars" / "Video · \(…) frames") and
+  passes on `51f5cf5`. Pre-fix worktree was removed.
+- Remaining: none in-repo. Only the final report to the coordinator.
 
 ## Verified tips (GitHub API / git ls-remote)
 
