@@ -1422,6 +1422,17 @@ private struct ServerSectionContent: View {
                     .toggleStyle(.switch)
             }
         }
+        if let m = meta["osMemoryReserve"] {
+            SettingsRow(
+                title: m.title,
+                explainer: m.explainer,
+                isDirty: dirty.dirty(\.osMemoryReserve)
+            ) {
+                Toggle("", isOn: $appState.serverOptions.osMemoryReserve)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
     }
 }
 
