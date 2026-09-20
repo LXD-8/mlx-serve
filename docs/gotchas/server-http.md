@@ -2230,3 +2230,24 @@ Fix: `Slot.in_pass` counts inference-thread passes holding the slot, taken under
 
 Guard: `tests/test_cancel_mid_tick.sh` (two MTP streams, kill one every 3 s):
 HEAD crashed on the 2nd cancel, the fix survived 15.
+
+## Concurrent long prompts were each admitted against the same free memory
+
+Defect: four 64K requests arriving together on a 27B under a 36 GB wired limit were all admitted
+(8.4 GB each against the same 19.9 GB available); the fourth prefill overran the limit. On macOS
+26.5 that was not a Metal OOM but an IOGPU kernel panic.
+
+Cause: the admission bill runs on the connection thread, before any sibling has allocated. The
+inference-thread re-ask that sees live memory was armed for `longCtxGated` archs only. A DFlash
+drafter's per-request context K/V (20 KB/token on the 27B pack) was in no bill at all.
+
+Fix: before each prefill the inference thread re-asks the cold bill against live memory
+(`scheduler.slotHoldsForMemory`). A request that does not fit while others are live goes back
+to the head of `pending` and waits for one to finish (`holdsForMemory`); alone it proceeds as
+before, so nothing can wait forever. `ModelConfig.drafter_ctx_bytes_per_token` is stamped at
+load and billed per prompt row.
+
+Guard: `tests/test_memory_pressure_4way.sh` (2B model under `MLX_SERVE_GPU_CEILING_MB`, which
+bounds the guards' arithmetic only) asserts served-or-named, an `[admission] held` line, and a
+live server. Rule: a transient or per-request state that scales with KV length is billed, or
+capped, before it is allocated.

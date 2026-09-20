@@ -502,6 +502,7 @@ pub const Slot = struct {
     cached_tokens: u32,
     logprobs_n: u32,
     serial_reason_logged: bool = false,
+    memory_hold_logged: bool = false,
     /// This tick decodes plain (batched) although the slot's MTP head is armed: the
     /// batched forward captures its hidden so the next solo tick can resume speculating.
     mtp_plain_tick: bool = false,
@@ -1678,6 +1679,13 @@ pub const Scheduler = struct {
         self.allocator.destroy(self);
     }
 
+    /// Another request is queued, prefilling or decoding right now.
+    pub fn hasCompany(self: *Scheduler) bool {
+        self.queue_mu.lockUncancelable(self.io);
+        defer self.queue_mu.unlock(self.io);
+        return self.in_flight > 0;
+    }
+
     /// Submit a new request. Builds a Slot, queues it, returns the handle.
     /// Blocks if the queue is full (i.e. `in_flight >= queue_cap`). When
     /// the scheduler is shutting down this returns `error.Shutdown`.
@@ -2463,6 +2471,46 @@ fn slotExclusiveDecode(slot: *const Slot) bool {
         slot.enable_mtp,
         if (slot.legacy_gen) |*g| g.mtpModuleHeadReleased() else false,
     );
+}
+
+/// A pending prefill that does not fit beside live requests waits for them to finish. Alone it
+/// proceeds: the connection thread already admitted it, and nobody would ever free memory for it.
+pub fn holdsForMemory(fits: bool, live_company: bool) bool {
+    return !fits and live_company;
+}
+
+fn liveDecodingCount(sch: *Scheduler) usize {
+    sch.queue_mu.lockUncancelable(sch.io);
+    defer sch.queue_mu.unlock(sch.io);
+    var n: usize = 0;
+    for (sch.decoding.items) |s| {
+        if (s.cancelled.load(.acquire) or s.finished or s.error_code != null) continue;
+        n += 1;
+    }
+    return n;
+}
+
+/// Cold bill against live memory; the gated arch runs its own warm pass inside `runPrefill`.
+fn slotHoldsForMemory(sch: *Scheduler, slot: *Slot) bool {
+    const cfg = slot.model.config orelse return false;
+    if (cfg.longCtxGated()) return false;
+    if (slot.model.transformer == null) return false;
+    const fits_fn = prefill_admission_fits orelse return false;
+    const live = liveDecodingCount(sch);
+    if (live == 0) return false;
+    const fits = fits_fn(cfg, slot.full_prompt.len, slot.max_tokens, slot.cache.config, generate_mod.visionPrefillUnchunked(slot.vision_embeddings != null), 0, 0, false, slot.enable_mtp);
+    if (!holdsForMemory(fits, true)) return false;
+    if (!slot.memory_hold_logged) {
+        slot.memory_hold_logged = true;
+        log.info("[admission] held: {d} tokens do not fit beside {d} live request(s); waiting for one to finish\n", .{ slot.full_prompt.len, live });
+    }
+    return true;
+}
+
+test "a prefill that does not fit waits only while another request is live" {
+    try testing.expect(holdsForMemory(false, true));
+    try testing.expect(!holdsForMemory(false, false)); // alone: never waits, or it waits forever
+    try testing.expect(!holdsForMemory(true, true));
 }
 
 /// One pending-drain candidate (or live decoding slot), reduced to what
@@ -4076,6 +4124,7 @@ fn doLoadOnInferenceThread(sch: *Scheduler, params: anytype) !void {
     entry.vision_encoder = vision_ptr;
     entry.drafter = drafter_ptr;
     entry.dflash = dflash_ptr;
+    if (entry.config) |c| c.drafter_ctx_bytes_per_token = if (dflash_ptr) |d| dflash_mod.ctxBytesPerToken(&d.config) else 0;
     entry.drafter_block_size = sch.drafter_block_size;
     entry.mtp = if (mtp_ptr) |h|
         generate_mod.MtpHeadRef{ .qwen = h }
@@ -4531,6 +4580,20 @@ fn inferenceLoop(ctx: ThreadCtx) void {
                     // no-ops with legacy_gen==null.
                     finishSlot(sch, slot, "cancelled");
                     continue;
+                }
+                if (slotHoldsForMemory(sch, slot)) {
+                    // Back to the head of `pending`, in order; the decode tick below runs first.
+                    sch.queue_mu.lockUncancelable(sch.io);
+                    defer sch.queue_mu.unlock(sch.io);
+                    var r = n_prefill;
+                    while (r > pi) {
+                        r -= 1;
+                        sch.pending.insert(sch.allocator, 0, to_prefill[r]) catch {
+                            to_prefill[r].markError("OutOfMemory");
+                        };
+                        if (r > pi) _ = to_prefill[r].in_pass.fetchSub(1, .acq_rel);
+                    }
+                    break;
                 }
                 var prefill_sw = io_util.Stopwatch.init(sch.io);
                 var qsa_gap_retried = false;
@@ -8010,66 +8073,133 @@ fn runBatchedMtpTick(sch: *Scheduler, group: []*Slot) !void {
     if (inner_err) |e| return e;
 }
 
-/// One speculative round for a group: every slot drafts on its own head, the trunk
-/// verifies all of them in ONE `[N, S]` forward (rows padded to the widest draft),
-/// every slot accepts and rolls back on its own row.
+/// One speculative round for a group: the lanes draft as rows of one head forward, the
+/// trunk verifies all of them in ONE `[N, S]` forward (rows padded to the widest draft),
+/// every slot accepts and rolls back on its own row, and the next round's chain is on the
+/// GPU before anything is published.
 fn runBatchedMtpTickInner(sch: *Scheduler, group: []*Slot) !void {
     const allocator = sch.allocator;
-    var states: [MAX_BATCH_GROUP]generate_mod.Generator.MtpRoundState = undefined;
+    var states: [MAX_BATCH_GROUP]Generator.MtpRoundState = undefined;
     var live: [MAX_BATCH_GROUP]*Slot = undefined;
     var n: usize = 0;
     defer for (states[0..n], live[0..n]) |*st, slot| {
         st.deinit(slot.allocator);
     };
+    var opens: [MAX_BATCH_GROUP]Generator.MtpRoundOpen = undefined;
+    var open_slots: [MAX_BATCH_GROUP]*Slot = undefined;
+    var open_n: usize = 0;
+    defer for (opens[0..open_n], open_slots[0..open_n]) |*o, slot| {
+        o.chain.deinit(slot.allocator);
+    };
+    // Set for the whole tick: a begin without a pre-draft hands its chain back to be
+    // built with the group's, and no finish pre-drafts on its own.
+    defer for (group) |slot| {
+        slot.legacy_gen.?.mtp_batch_head = false;
+    };
 
     for (group) |slot| {
         const gen = &slot.legacy_gen.?;
         if (try loopGuardTick(sch, slot, gen)) continue;
+        gen.mtp_batch_head = true;
         const begun = gen.mtpRoundBegin(slot.allocator) catch |e| {
             slot.markError(@errorName(e));
             continue;
         };
         switch (begun) {
-            .open => unreachable,
             .done => |r| publishMtpResult(sch, slot, gen, r),
             .verify => |st| {
                 states[n] = st;
                 live[n] = slot;
                 n += 1;
             },
+            .open => |o| {
+                opens[open_n] = o;
+                open_slots[open_n] = slot;
+                open_n += 1;
+            },
+        }
+    }
+    if (open_n > 0) {
+        var gens: [MAX_BATCH_GROUP]*Generator = undefined;
+        var chains: [MAX_BATCH_GROUP]Generator.MtpPreDraft = undefined;
+        var depth: u32 = 0;
+        for (opens[0..open_n], open_slots[0..open_n], 0..) |*o, slot, i| {
+            gens[i] = &slot.legacy_gen.?;
+            chains[i] = o.chain;
+            depth = @max(depth, o.chain.m);
+        }
+        const chain_lap = Generator.SubLap.start(Generator.mtpTraceOn(), open_slots[0].io);
+        const built = Generator.mtpChainBuildBatched(gens[0..open_n], chains[0..open_n], 0, depth);
+        for (opens[0..open_n], chains[0..open_n]) |*o, c| o.chain = c;
+        const dispatched = if (built) |_| Generator.mtpChainDispatchBatched(chains[0..open_n]) else |e| e;
+        if (chain_lap.read()) |ns| for (gens[0..open_n]) |gen| gen.mtpTraceSub(.chain, ns);
+        var taken = open_n;
+        dispatched catch |e| {
+            for (open_slots[0..open_n]) |slot| slot.markError(@errorName(e));
+            taken = 0;
+        };
+        if (taken > 0) open_n = 0;
+        for (opens[0..taken], open_slots[0..taken], 0..) |o, slot, i| {
+            // `mtpRoundContinue` owns the chain from here, on success and on error.
+            states[n] = gens[i].mtpRoundContinue(slot.allocator, o) catch |e| {
+                slot.markError(@errorName(e));
+                continue;
+            };
+            live[n] = slot;
+            n += 1;
         }
     }
     if (n == 0) return;
-    if (n == 1) {
-        const gen = &live[0].legacy_gen.?;
-        try gen.mtpRoundVerify(&states[0]);
-        const r = try gen.mtpRoundFinish(live[0].allocator, &states[0]);
-        publishMtpResult(sch, live[0], gen, r);
-        return;
-    }
 
+    var results: [MAX_BATCH_GROUP]?Generator.DrafterStepResult = @splat(null);
+    const merged = n > 1 and try verifyGroupMerged(sch, states[0..n], live[0..n]);
+    var gens: [MAX_BATCH_GROUP]*Generator = undefined;
+    var running: usize = 0;
+    for (states[0..n], live[0..n], 0..) |*st, slot, i| {
+        const gen = &slot.legacy_gen.?;
+        if (!merged) gen.mtpRoundVerify(st) catch |e| {
+            slot.markError(@errorName(e));
+            continue;
+        };
+        results[i] = gen.mtpRoundFinish(slot.allocator, st) catch |e| {
+            slot.markError(@errorName(e));
+            continue;
+        };
+        if (results[i] != null) {
+            gens[running] = gen;
+            running += 1;
+        }
+    }
+    if (running > 0) Generator.mtpGroupPreDraft(gens[0..running], allocator) catch |e| {
+        for (live[0..n]) |slot| slot.markError(@errorName(e));
+    };
+    for (live[0..n], results[0..n]) |slot, r| {
+        if (slot.state == .errored) {
+            if (r) |res| slot.allocator.free(res.tokens);
+            continue;
+        }
+        publishMtpResult(sch, slot, &slot.legacy_gen.?, r);
+    }
+}
+
+/// The group's verify as ONE `[N, S]` trunk forward. False = no recurrent state to merge
+/// yet, every row verifies solo this tick.
+fn verifyGroupMerged(sch: *Scheduler, states: []Generator.MtpRoundState, live: []*Slot) !bool {
+    const allocator = sch.allocator;
+    const n = states.len;
     const xfm = live[0].model.transformer.?;
     const s_stream = xfm.s;
     var width: u32 = 0;
-    for (states[0..n]) |*st| width = @max(width, st.verify_len);
+    for (states) |*st| width = @max(width, st.verify_len);
     const ctxs = try allocator.alloc(*ForwardCtx, n);
     defer allocator.free(ctxs);
     const rope_offsets = try allocator.alloc(u32, n);
     defer allocator.free(rope_offsets);
-    for (live[0..n], 0..) |slot, i| {
+    for (live, 0..) |slot, i| {
         ctxs[i] = &slot.legacy_gen.?.ctx;
         rope_offsets[i] = @intCast(slot.moe_seq_offset);
     }
-    if (!xfm.batchedGdnReady(ctxs)) {
-        // No recurrent state to merge yet: every round solo this tick.
-        for (states[0..n], live[0..n]) |*st, slot| {
-            const gen = &slot.legacy_gen.?;
-            try gen.mtpRoundVerify(st);
-            const r = try gen.mtpRoundFinish(slot.allocator, st);
-            publishMtpResult(sch, slot, gen, r);
-        }
-        return;
-    }
+    if (!xfm.batchedGdnReady(ctxs)) return false;
 
     // [N, width] rows: each verify input right-padded with token 0 (never read past 1+m).
     const rows_vec = mlx.mlx_vector_array_new();
@@ -8079,7 +8209,7 @@ fn runBatchedMtpTickInner(sch: *Scheduler, group: []*Slot) !void {
     defer for (padded[0..padded_n]) |a| {
         _ = mlx.mlx_array_free(a);
     };
-    for (states[0..n]) |*st| {
+    for (states) |*st| {
         const pad: c_int = @intCast(width - st.verify_len);
         var row = mlx.mlx_array_new();
         if (pad > 0) {
@@ -8108,7 +8238,7 @@ fn runBatchedMtpTickInner(sch: *Scheduler, group: []*Slot) !void {
     defer _ = mlx.mlx_array_free(logits);
     // The batched forward moved only its scratch offset; the solo forward would have
     // advanced every slot by the rows it ran, and the finish rolls back from there.
-    for (live[0..n]) |slot| slot.moe_seq_offset += width;
+    for (live) |slot| slot.moe_seq_offset += width;
 
     const logit_rows = try Transformer.sliceBatchRows(allocator, s_stream, logits, n);
     defer allocator.free(logit_rows);
@@ -8116,17 +8246,14 @@ fn runBatchedMtpTickInner(sch: *Scheduler, group: []*Slot) !void {
     defer allocator.free(last_rows);
     const all_rows = try Transformer.sliceBatchRows(allocator, s_stream, hidden_all, n);
     defer allocator.free(all_rows);
-    for (states[0..n], 0..) |*st, i| {
+    for (states, 0..) |*st, i| {
         st.verify_logits = logit_rows[i];
         st.new_hidden = last_rows[i];
         st.verify_hidden_all = all_rows[i];
         st.verify_len = width;
     }
     if (sch.metrics) |m| m.batched_group_size.set(n);
-    for (states[0..n], live[0..n]) |*st, slot| {
-        const gen = &slot.legacy_gen.?;
-        mtpFinishPublish(sch, slot, gen, st);
-    }
+    return true;
 }
 
 fn groupCostSampleComplete(expected: usize, retained: []const u32, published: []const bool) bool {

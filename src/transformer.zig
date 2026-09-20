@@ -20004,7 +20004,7 @@ pub const Transformer = struct {
     }
 
     /// Index `i` of `arr` along `axis` as an owned view handle (the axis keeps size 1).
-    fn axisView(s: mlx.mlx_stream, arr: mlx.mlx_array, axis: usize, i: usize) !mlx.mlx_array {
+    pub fn axisView(s: mlx.mlx_stream, arr: mlx.mlx_array, axis: usize, i: usize) !mlx.mlx_array {
         const shape = mlx.getShape(arr);
         var start: [8]c_int = @splat(0);
         var stop: [8]c_int = @splat(0);

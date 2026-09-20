@@ -411,6 +411,7 @@ pub fn main(init: std.process.Init) !void {
     // --pld* flags. See server.mlxCacheLimitBytes for why MLX's own default
     // (~121 GB on a 128 GB Mac) is no defense.
     server_mod.applyMlxCacheLimit();
+    server_mod.applyGpuCeilingEnv();
     // Resolve lazily-cached env reads on the main thread before other threads exist.
     @import("transformer.zig").warmQsaEnvCaches();
     @import("prefix_cache.zig").warmEnvCaches();

@@ -8,13 +8,16 @@
 - **Bonsai 2 runs in its own numerics.** f16 activations over the pack's f16 scales and an f32 GatedDeltaNet state, as Prism's reference runtime does: 60x closer to an f32 reference of the pack than the old bf16 path (KL 2.9e-6 vs 1.7e-4), same speed.
 
 ### Changes
+- Concurrent long prompts that do not fit in GPU memory together now wait their turn instead of overrunning it (a crash, or a kernel panic on macOS 26.5); a DFlash drafter's context is part of the memory bill.
+- With a DFlash drafter loaded, concurrent requests use the MTP head so they batch: four streams on the 27B went from 64 to 122 tok/s (M4 Max).
 - Qwen3.8 family: a thinking request that names no `reasoning_effort` renders as low and now gets low's 2048-token budget on chat, messages and responses; an explicit effort or `--reasoning-budget` still wins.
 - `/v1/responses` enforces the reasoning budget (effort word or `reasoning_budget_tokens`) like chat; a capped thought used to run until `max_output_tokens`.
 - Logprobs are computed in f32: f16-logit models returned `-inf`/NaN (invalid JSON) and bf16 ones were rounded.
 - 2-bit packs take the dequant+GEMM prefill route from 384-token chunks (was 2048): +7-8% prefill on prompts under 2k tokens.
 - `mlx-serve launch pi` sends the picked thinking level as `reasoning_effort` (was `enable_thinking` only, which dropped low/medium).
 - Stopping a request while another one was decoding could crash the server.
-- Concurrent requests decode faster on M4-family Macs: four MTP streams share one verify forward (Qwen3.8-27B 4-bit, M4 Max: 72 to 109 tok/s aggregate), and batched decode past 1k tokens of context no longer copies every stream's KV per step (4 streams at 28k: 26 to 64 tok/s).
+- MTP auto draft depth settles closer to the best depth for the content at short context and no longer pauses mid-round to read draft confidences (Qwen3.8-27B 4-bit, M4 Max: code +2%, prose +2%, short echo +3%); `MLX_SERVE_MTP_DEPTH_POLICY=legacy` restores the old planner.
+- Concurrent requests decode faster on M4-family Macs: four MTP streams share one verify forward and draft together (Qwen3.8-27B 4-bit, M4 Max: 72 to 119 tok/s aggregate), and batched decode past 1k tokens of context no longer copies every stream's KV per step (4 streams at 28k: 26 to 64 tok/s).
 
 ## v26.9.4 — Correctness Fixes, Chinese Translation, Benchmarks
 
