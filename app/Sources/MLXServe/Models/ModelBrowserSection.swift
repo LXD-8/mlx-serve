@@ -43,9 +43,8 @@ enum ModelBrowserSection: String, CaseIterable, Identifiable, Hashable {
     /// filesystem list is what made the old toggle read as a filter.
     var showsSearchControls: Bool { self == .discover }
 
-    /// Panes that render on-disk state, and therefore need the periodic
-    /// `refreshModels()` rescan while bytes are landing.
-    private var showsDiskState: Bool { self == .myModels || self == .downloads }
+    /// Panes that render on-disk state, and therefore want the library re-read.
+    var showsDiskState: Bool { self == .myModels || self == .downloads }
 
     /// Whether to run the 1 Hz disk rescan: only on a pane that shows on-disk
     /// state, and only while a download is actually in flight, so it

@@ -20,6 +20,8 @@ class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     @Published var downloads = DownloadManager()
     @Published var localModels: [LocalModel] = []
+
+    private let libraryRefresher = ModelLibraryRefresher()
     /// Chat is answered by Apple's on-device model rather than the server.
     /// Persisted like `selectedModelPath`; the local pick stays set underneath
     /// so turning it off lands back on the model that was chosen before.
@@ -749,8 +751,17 @@ class AppState: ObservableObject {
         await server.refreshModels()
     }
 
+    /// Rescan the model library without blocking the caller: the walk reads the
+    /// whole library (~1 s on a real one) and is reached from UI actions. Callers
+    /// that need the list caught up observe `localModels`.
     func refreshModels() {
-        localModels = downloads.discoverLocalModels()
+        libraryRefresher.refresh(inputs: downloads.scanInputs()) { [weak self] models in
+            self?.adoptDiscoveredModels(models)
+        }
+    }
+
+    private func adoptDiscoveredModels(_ models: [LocalModel]) {
+        localModels = models
         // Auto-select a base model if none selected or the current selection is
         // invalid. Drafters and media / non-chat models never get auto-picked —
         // they aren't loadable as the primary chat model (must match the tray
