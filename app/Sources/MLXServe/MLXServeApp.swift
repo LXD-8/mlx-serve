@@ -22,7 +22,7 @@ struct MLXCoreEntryPoint {
 struct MLXCoreApp: App {
     private static let menuBarIcon: NSImage = {
         guard let img = BundledAsset.image("tray.png") else {
-            return NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "MLX Core")!
+            return NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "MLX-Serve")!
         }
         img.size = NSSize(width: 18, height: 18)
         img.isTemplate = true
@@ -118,7 +118,7 @@ struct MLXCoreApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("MLX Core", id: "chat") {
+        Window("MLX-Serve", id: "chat") {
             ChatView()
                 .environmentObject(appState)
                 // The Model Browser is a MODE of this window now

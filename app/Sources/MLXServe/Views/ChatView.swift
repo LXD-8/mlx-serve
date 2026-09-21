@@ -3357,7 +3357,7 @@ struct ChatDetailView: View {
     private func showMicPermissionError() {
         let alert = NSAlert()
         alert.messageText = "Microphone access needed"
-        alert.informativeText = "Enable microphone access for MLX Core in System Settings → Privacy & Security → Microphone, then try again."
+        alert.informativeText = "Enable microphone access for MLX-Serve in System Settings → Privacy & Security → Microphone, then try again."
         alert.alertStyle = .warning
         alert.runModal()
     }

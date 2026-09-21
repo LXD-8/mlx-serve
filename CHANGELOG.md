@@ -8,6 +8,9 @@
 - **Bonsai 2 runs in its own numerics.** f16 activations over the pack's f16 scales and an f32 GatedDeltaNet state, as Prism's reference runtime does: 60x closer to an f32 reference of the pack than the old bf16 path (KL 2.9e-6 vs 1.7e-4), same speed.
 
 ### Changes
+- A model larger than the GPU memory limit (a lowered `iogpu.wired_limit_mb`) is refused at load with a clear message; it used to load, fail in warmup and then refuse every request.
+- Downloads into a model folder on an exFAT, NTFS or network drive no longer fail with "only 0 B available" (#474).
+- The app is now called MLX-Serve everywhere in its UI, same as the server; the welcome screen shows the new app icon.
 - Several long requests restored from the prefix cache at once no longer overrun GPU memory (a failed generation, or a kernel panic on a 16 GB Mac): each is billed against what the others were promised, and the server now leaves the OS a memory reserve (`--os-reserve-gib`, a toggle in Settings).
 - Concurrent long prompts that do not fit in GPU memory together now wait their turn instead of overrunning it (a crash, or a kernel panic on macOS 26.5); a DFlash drafter's context is part of the memory bill.
 - With a DFlash drafter loaded, concurrent requests use the MTP head so they batch: four streams on the 27B went from 64 to 122 tok/s (M4 Max).
