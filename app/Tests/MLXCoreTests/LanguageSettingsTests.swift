@@ -93,6 +93,63 @@ final class LanguageSettingsTests: XCTestCase {
         XCTAssertEqual(Bundle.main.localizedString(forKey: "Settings", value: nil, table: nil), "Settings")
     }
 
+    /// English is the development language, so its copy **is** the key and this
+    /// build ships no `en.lproj` for it. Treating that as "no override" answered
+    /// with the system language instead, which is the language the user just
+    /// switched away from — every `L10n` label (the settings rows, the sidebar,
+    /// AppKit's own menus) stayed Chinese while the few SwiftUI literals
+    /// followed the picker.
+    func testTheDevelopmentLanguageAnswersWithTheKeyNotTheSystemLanguage() {
+        defer { BundleLanguageOverride.apply(.system) }
+
+        BundleLanguageOverride.apply(.english, in: Self.resourcesBundle)
+        XCTAssertEqual(BundleLanguageOverride.resolution, .sourceLanguage)
+        XCTAssertNil(BundleLanguageOverride.languageBundle, "English ships no .lproj of its own")
+
+        // The answer the system language would give is the Chinese catalog's,
+        // and the override must not fall back to it.
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Settings", value: nil, table: nil, bundle: .main, fallback: { "设置" }
+            ),
+            "Settings"
+        )
+
+        // The shipped catalog still resolves through it, translated.
+        BundleLanguageOverride.apply(.simplifiedChinese, in: Self.resourcesBundle)
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Settings", value: nil, table: nil, bundle: .main, fallback: { "unused" }
+            ),
+            "设置"
+        )
+
+        // And `.system` hands the lookup back untouched.
+        BundleLanguageOverride.apply(.system)
+        XCTAssertEqual(BundleLanguageOverride.resolution, .system)
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Settings", value: nil, table: nil, bundle: .main, fallback: { "system answer" }
+            ),
+            "system answer"
+        )
+    }
+
+    /// The redirect is scoped to `Bundle.main`; another bundle keeps its own
+    /// answer even while a language is selected.
+    func testTheLookupDecisionLeavesOtherBundlesAlone() {
+        BundleLanguageOverride.apply(.english, in: Self.resourcesBundle)
+        defer { BundleLanguageOverride.apply(.system) }
+
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Settings", value: nil, table: nil,
+                bundle: Bundle(for: Self.self), fallback: { "framework answer" }
+            ),
+            "framework answer"
+        )
+    }
+
     /// The exchange is scoped to `Bundle.main`: another bundle's own strings
     /// must keep resolving through the framework that owns them.
     func testOtherBundlesKeepTheirOwnLookup() {

@@ -68,8 +68,32 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 /// this build ships no `.lproj` for) restores the untouched lookup, which is
 /// what keeps an unknown preference value harmless.
 enum BundleLanguageOverride {
-    /// The bundle the override resolves against; nil = pass through.
-    private(set) static var languageBundle: Bundle?
+    /// What a lookup does while a language is selected.
+    ///
+    /// Three answers, because "this build ships no `.lproj` for the code" is two
+    /// different situations. The system, or a code with no `.lproj` at all, is
+    /// no override. A shipped `.lproj` resolves inside it. The *development*
+    /// language ships no `.lproj` on purpose — its copy **is** the key in the
+    /// catalog — so reading it as "no override" hands back whatever the system
+    /// language would have said instead, which is a language the user just
+    /// switched away from.
+    enum Resolution: Equatable {
+        /// `.system`, or a code with no `.lproj`: the untouched lookup answers.
+        case system
+        /// Resolve inside the shipped `.lproj`.
+        case catalog(Bundle)
+        /// Answer with the key itself: the development language's copy.
+        case sourceLanguage
+    }
+
+    /// What the override resolves against.
+    private(set) static var resolution: Resolution = .system
+
+    /// The bundle the override resolves against; nil unless a catalog is in use.
+    static var languageBundle: Bundle? {
+        if case .catalog(let bundle) = resolution { return bundle }
+        return nil
+    }
 
     /// Exchanges the lookup once, on first use. `Bundle` is a class cluster,
     /// but `localizedString(forKey:value:table:)` is a real instance method on
@@ -89,6 +113,21 @@ enum BundleLanguageOverride {
         return Bundle(path: path)
     }
 
+    /// What `language` resolves to inside `host`.
+    ///
+    /// The development language is answered by the key: the app ships its
+    /// English copy *as* the catalog keys (`SettingsRow` renders
+    /// `L10n.text("Appearance")`, the resources carry `"Appearance" = "外观"`),
+    /// so English needs no `.lproj` — and must not fall through to the system
+    /// language, or switching to English leaves the copy in the language the
+    /// user left.
+    static func resolve(for language: AppLanguage, in host: Bundle = .main) -> Resolution {
+        guard let code = language.code else { return .system }
+        if let catalog = bundle(for: code, in: host) { return .catalog(catalog) }
+        let development = host.developmentLocalization ?? "en"
+        return code == development ? .sourceLanguage : .system
+    }
+
     /// Applies `language` from here on. Cheap and idempotent — every scene
     /// root calls it, and the Settings row calls it the moment the picker
     /// moves.
@@ -99,13 +138,35 @@ enum BundleLanguageOverride {
     /// same thing for the catalog).
     static func apply(_ language: AppLanguage, in host: Bundle = .main) {
         _ = installOnce
-        let resolved = language.code.flatMap { bundle(for: $0, in: host) }
+        let resolved = resolve(for: language, in: host)
         // A reapply of the same language is not an invalidation: every scene
         // calls this on appear, and bumping then would re-run every `L10n`
         // body for nothing. Only a real swap is news.
-        guard languageBundle?.bundlePath != resolved?.bundlePath else { return }
-        languageBundle = resolved
+        guard resolution != resolved else { return }
+        resolution = resolved
         LanguageLookupRevision.shared.bump()
+    }
+
+    /// The answer one lookup gets. `bundle` is the receiver of the call — only
+    /// `Bundle.main` is redirected, every other bundle keeps its framework's own
+    /// answer — and `fallback` is that untouched answer, computed only when it
+    /// is the one being returned.
+    static func localizedString(
+        forKey key: String,
+        value: String?,
+        table: String?,
+        bundle: Bundle,
+        fallback: () -> String
+    ) -> String {
+        guard bundle == .main else { return fallback() }
+        switch resolution {
+        case .system:
+            return fallback()
+        case .catalog(let catalog):
+            return catalog.localizedString(forKey: key, value: value, table: table)
+        case .sourceLanguage:
+            return value ?? key
+        }
     }
 }
 
@@ -114,9 +175,14 @@ extension Bundle {
     /// against the selected language for the app's own bundle, and forwards
     /// everything else to the implementation it exchanged with.
     @objc func mlx_localizedString(forKey key: String, value: String?, table tableName: String?) -> String {
-        if self == Bundle.main, let languageBundle = BundleLanguageOverride.languageBundle {
-            return languageBundle.localizedString(forKey: key, value: value, table: tableName)
-        }
-        return mlx_localizedString(forKey: key, value: value, table: tableName)
+        // The exchange means this same call reaches the implementation it
+        // replaced, which is what the fallback uses.
+        BundleLanguageOverride.localizedString(
+            forKey: key,
+            value: value,
+            table: tableName,
+            bundle: self,
+            fallback: { self.mlx_localizedString(forKey: key, value: value, table: tableName) }
+        )
     }
 }
