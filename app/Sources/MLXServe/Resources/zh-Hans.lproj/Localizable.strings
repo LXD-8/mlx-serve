@@ -685,6 +685,7 @@
 "LTX-Video 2.5 Q4 (with audio, ~36 GB)" = "LTX-Video 2.5 Q4（含音频，约 36 GB）";
 "LTX-Video performs best with detailed 4–8 sentence prompts. Try Examples or Prompt tips above." = "LTX-Video 在详细的 4–8 句提示词下表现最好。试试上方的示例或提示词技巧。";
 "Landscape" = "风景";
+"Language" = "语言";
 "Large" = "大";
 "Largest models" = "最大的模型";
 "Last frame" = "末帧";
@@ -1338,6 +1339,7 @@
 "The C bindings the server links MLX through (pinned submodule revision)." = "服务器用来链接 MLX 的 C 绑定（固定子模块版本）。";
 "The answer did not use the planted constant" = "回答没有使用植入的常量";
 "The answer used the constant planted in the context" = "回答使用了植入上下文中的常量";
+"The app's own language. System follows macOS — including the per-app language in System Settings ▸ General ▸ Language & Region." = "应用自身的语言。“系统”跟随 macOS —— 包括“系统设置 → 通用 → 语言与地区”中的单应用语言。";
 "The bigger FLUX.2-klein — stronger prompt following and detail than the 4B, with the same fast schedule and the same instruction editing. Twice the download and memory." = "更大的 FLUX.2-klein —— 提示词遵循和细节都强于 4B，同样快速的采样调度和指令编辑。下载和内存翻倍。";
 "The built-in macOS voice. No download and no GPU, but the least natural of the three." = "内置的 macOS 音色。无需下载，也不占用 GPU，但三者中最不自然。";
 "The document index is still being prepared (resolving the embedding model). Wait a moment and search again." = "文档索引仍在准备中（正在解析嵌入模型）。请稍候片刻再搜索。";

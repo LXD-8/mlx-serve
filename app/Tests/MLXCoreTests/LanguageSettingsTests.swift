@@ -1,4 +1,6 @@
+import Foundation
 import XCTest
+
 @testable import MLXCore
 
 /// The language override: what a preference value means, and what the bundle
@@ -12,7 +14,13 @@ final class LanguageSettingsTests: XCTestCase {
 
     /// The packaged resources, as the app bundle carries them (`build.sh`
     /// copies this directory into `Contents/Resources`).
-    private static let resourcesBundle = Bundle(path: resourcesRoot.path)!
+    ///
+    /// `Bundle(path:)` answers nil when the directory stops looking like a
+    /// bundle, which would take the whole test target down with it if this were
+    /// force-unwrapped in a stored property. Falling back to the test bundle
+    /// turns that into ordinary assertion failures instead.
+    private static let resourcesBundle =
+        Bundle(path: resourcesRoot.path) ?? Bundle(for: LanguageSettingsTests.self)
 
     // MARK: - The preference value
 
@@ -64,20 +72,25 @@ final class LanguageSettingsTests: XCTestCase {
     /// as they were — the override is a redirection, never a breakage.
     func testAnUnavailableLanguageLeavesLookupsAlone() {
         // The test host carries no .lproj of its own, so this is the shipped
-        // "language the bundle cannot provide" path: the redirection stays
-        // off and every lookup answers exactly as it did before.
+        // "language the bundle cannot provide" path: the redirection stays off,
+        // and a key the host *does* translate stays untranslated through
+        // Bundle.main — an absent key reading as itself would prove neither.
         BundleLanguageOverride.apply(.simplifiedChinese)
         XCTAssertNil(BundleLanguageOverride.languageBundle)
-        XCTAssertEqual(Bundle.main.localizedString(forKey: "Absent key", value: nil, table: nil), "Absent key")
+        XCTAssertEqual(Bundle.main.localizedString(forKey: "Settings", value: nil, table: nil), "Settings")
 
-        // Resolved against the packaged resources, the same call does redirect.
+        // Resolved against the packaged resources, the same call does redirect:
+        // the same key now answers in Chinese, and a key the catalog does not
+        // carry still falls back to itself rather than to nothing.
         BundleLanguageOverride.apply(.simplifiedChinese, in: Self.resourcesBundle)
         XCTAssertNotNil(BundleLanguageOverride.languageBundle)
+        XCTAssertEqual(Bundle.main.localizedString(forKey: "Settings", value: nil, table: nil), "设置")
+        XCTAssertEqual(Bundle.main.localizedString(forKey: "Absent key", value: nil, table: nil), "Absent key")
 
         // And `.system` restores the untouched path.
         BundleLanguageOverride.apply(.system, in: Self.resourcesBundle)
         XCTAssertNil(BundleLanguageOverride.languageBundle)
-        XCTAssertEqual(Bundle.main.localizedString(forKey: "Absent key", value: nil, table: nil), "Absent key")
+        XCTAssertEqual(Bundle.main.localizedString(forKey: "Settings", value: nil, table: nil), "Settings")
     }
 
     /// The exchange is scoped to `Bundle.main`: another bundle's own strings
