@@ -316,6 +316,11 @@ pub fn computeSigmas(a: std.mem.Allocator, steps: u32, image_seq_len: u32) ![]f3
     const max_seq: f64 = 8192;
     const terminal: f64 = 0.02;
     const out = try a.alloc(f32, steps + 1);
+    if (steps == 1) {
+        out[0] = 1;
+        out[1] = 0;
+        return out;
+    }
     const m = (max_shift - base_shift) / (max_seq - base_seq);
     const mu = m * @as(f64, @floatFromInt(image_seq_len)) + (base_shift - m * base_seq);
     const emu = @exp(mu);
@@ -1572,6 +1577,10 @@ test "QwenImage sigmas match the reference schedule" {
     const got = try computeSigmas(testing.allocator, 8, 640);
     defer testing.allocator.free(got);
     for (want, got) |w, g| try testing.expectApproxEqAbs(w, g, 1e-5);
+    // One step has no span to stretch.
+    const one = try computeSigmas(testing.allocator, 1, 640);
+    defer testing.allocator.free(one);
+    try testing.expectEqualSlices(f32, &.{ 1.0, 0.0 }, one);
 }
 
 test "QwenImage convs strip only past the unfold budget" {
