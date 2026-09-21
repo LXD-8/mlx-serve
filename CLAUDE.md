@@ -40,6 +40,7 @@ Zig 0.17 (pinned nightly via `scripts/fetch-zig.sh`; brew 0.16 no longer builds)
 | `ollama.zig` | `/api/*` translation, SSE→NDJSON `Sink`, tags/show/ps, `resolveName` |
 | `gen.zig` | Unified media gen: modality-named engine slots, `detectModality`/`peekModelType`, per-request handlers, img2img/edit/LoRA, residency estimators |
 | `krea.zig` / `flux.zig` | Image backends (Krea-2-Turbo / FLUX.2 klein 4B+9B); `MixedLinear` infers quant geometry |
+| `qwen_image.zig` | Qwen-Image-2.1 (`qwen_image21`, quantized packs only): block-causal single-stream DiT (two sdpa calls, shared t=0/t modulation), 64-ch /16 VAE, `mage_flow.TextEncoder` at 8B width; 40 steps, real CFG, img2img; text encoder STAGED per request where the pack crowds the GPU (`gen.qwenImageStagesTextEncoder`) |
 | `multipart.zig` | RFC 7578 form parsing, zero-copy `Part` (only non-JSON shape: `POST /v1/images/edits`) |
 | `mage_flow.zig` | MageFlow Turbo/Edit: flow DiT + DiCo VAE + Qwen3-VL TE; `MfLinear` shared with H3; DiT/TE bf16, VAE f32 (load-bearing) |
 | `hunyuan3d.zig` / `hunyuan3d_paint*.zig` | 3D shape + texture paint; converted layouts BAKE OUT per-head QKV interleaves — never "fix" it |
@@ -141,7 +142,7 @@ Dispatch on `config.json` `model_type`. GGUF bypasses MLX → embedded engine by
 | `bailing_hybrid` | Ling 3.0 (BailingMoeV3): KDA + MLA hybrid MoE, `layer_group_size` → `full_attention_interval`; KDA = GDN with PER-CHANNEL gate (`_vec` kernel), BOUNDED-SIGMOID gate (`kda_lower_bound` REPLACES softplus), sigmoid out-gate; MLA = naive DeepSeek-V3 (ASYMMETRIC K192/V128 cache; `--kv-quant 4|8` ok); `noaux_tc` routing. Thinking ON; GLM tool tags. Mirror `rapid-mlx/Ling-3.0-tiny-MLX-4bit` |
 | `*.gguf` | ds4/llama.cpp; GGUF presence WINS over stray config.json. ds4 DSpark: `--dspark` arms when a `-DSpark-` GGUF sits beside the model (gate keys on `mtpDraftTokens()>1` NOT `hasMtp()`); ~0 net on 0731 |
 | `minimax_h3` | MiniMax-H3 text-to-audio-video: joint denoise, 17k+5 frame ladder, 24 fps, two partitions (fl2va/ref2va — `tasks` is the ONLY discriminator), Turbo LoRA, chained windows, fast recipe default-on |
-| media types | `flux2*`/`krea*`/`mage_flow*`/`qwen3_tts`/`acestep`/`minimax_music3`/`AudioVideo` (LTX 2.3 + 2.5 by `model_version`)/`hunyuan3d*` → gen.zig slots (`mage_flow` has NO root config.json — classified from `model_index.json` by `gen.peekModelType` + `model_discovery.peekMageFlowIndex`, kept in sync) |
+| media types | `flux2*`/`krea*`/`mage_flow*`/`qwen_image*`/`qwen3_tts`/`acestep`/`minimax_music3`/`AudioVideo` (LTX 2.3 + 2.5 by `model_version`)/`hunyuan3d*` → gen.zig slots (`mage_flow` has NO root config.json — classified from `model_index.json` by `gen.peekModelType` + `model_discovery.peekMageFlowIndex`, kept in sync) |
 
 Models with `vision_config` but no vision weights disable vision. Embedded-engine detail: `docs/reference.md`.
 
@@ -448,6 +449,7 @@ Media backends:
 - **Music3 is NOT an ACE-Step variant** (timestep TOKEN, reversed SwiGLU, alpha-only Snake, hardcoded DiT RoPE). Probe laps (`MUSIC3_COST_PROBE`) before bandwidth arithmetic.
 - **LTX**: a standalone-frame latent belongs in slot 0 ONLY (#260; `keyframeMask` + `keyframePositions`); the RELEASE is a config field deciding the text encoder (`LtxVersion`; 2.5 runs the real gemma4 via `gemmaCapture4`, `prefill_mask_add`); `keyframes_abs_pos_embedding` parsed, never added.
 - **LTX DiffVAE**: constructor args are not its config (`Sampler`: 1-step x0 at t×1000); tile budget is a per-REQUEST memory decision (`tileTokensForMemory`). 4-bit affine on a video DiT is a QUALITY setting (8-bit mirror).
+- **A full-resolution f32 VAE stage is BANDED, exact because everything but its 3x3 convs is per-pixel** (`qwen_image.Stage.banded` + `Conv.forwardStrips`): whole, a 1024² decode peaked 18 GB on a 5 GB engine while MLX's peak counter read 4.9. Bar = the fixture oracle with bands forced.
 - **A pinned library's op TRANSIENT is invisible to residency bills** (#321, #424): `conv3dDepthChunked` windows decoder convs; H3 `encodeMoments` EVALS per tile pass. Diff conv DISPATCH per mlx bump.
 - **Canvas**: `recommendedResolution(totalGB:)` per Mac, capped by `autoCanvasCapPixels`; two-stage denoises at HALF; `maxFramePayloadBytes` is a TRANSPORT limit. A tiled decoder whose positions normalize over the EXTENT refuses (`error.TilingUnsupported`).
 - **H3**: condition stream assembled in SEGMENT order by ONE resolver (`resolveRefs`); identical-file partitions need a DECLARED discriminator (`tasks`).

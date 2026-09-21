@@ -8,6 +8,7 @@
 - **Bonsai 2 runs in its own numerics.** f16 activations over the pack's f16 scales and an f32 GatedDeltaNet state, as Prism's reference runtime does: 60x closer to an f32 reference of the pack than the old bf16 path (KL 2.9e-6 vs 1.7e-4), same speed.
 
 ### Changes
+- Qwen-Image-2.1 image generation (quantized packs, `tests/convert_qwen_image21_weights.py`): text-to-image, image-to-image and optional negative-prompt guidance; on smaller Macs the text encoder is loaded per request so the 8-bit pack fits in 32 GB.
 - A model larger than the GPU memory limit (a lowered `iogpu.wired_limit_mb`) is refused at load with a clear message; it used to load, fail in warmup and then refuse every request.
 - Downloads into a model folder on an exFAT, NTFS or network drive no longer fail with "only 0 B available" (#474).
 - The app is now called MLX-Serve everywhere in its UI, same as the server; the welcome screen shows the new app icon.
