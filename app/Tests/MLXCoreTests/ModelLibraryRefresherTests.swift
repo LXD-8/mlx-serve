@@ -28,6 +28,22 @@ final class ModelLibraryRefresherTests: XCTestCase {
                        atomically: true, encoding: .utf8)
     }
 
+    // MARK: - The awaited first scan
+
+    /// The launch plan reads the library the moment this returns, so `scan`
+    /// must hand back the walk's result rather than an empty list: awaiting a
+    /// scan that published later would be the same race as not awaiting at all.
+    @MainActor
+    func testAwaitingAScanReturnsTheWalkResult() async throws {
+        let refresher = ModelLibraryRefresher()
+        try makeFakeModel(at: (tempRoot as NSString).appendingPathComponent("gemma-4-e4b-it-4bit"))
+
+        let models = await refresher.scan(inputs: emptyInputs)
+
+        XCTAssertEqual(models.count, 1)
+        XCTAssertTrue(models.first?.path.hasSuffix("gemma-4-e4b-it-4bit") ?? false)
+    }
+
     // MARK: - Ordering
 
     @MainActor

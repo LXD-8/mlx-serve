@@ -591,7 +591,13 @@ class AppState: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        refreshModels()
+        // The launch plan below reads `localModels`, so the first scan is awaited
+        // instead of fired: the walk is off-main, and a plan resolved against an
+        // empty library would silently stop preloading the pinned model.
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshModelsBeforeLaunch()
+        }
         // A Finder-launched bundle has no shell environment, so HF_HOME /
         // HF_HUB_CACHE / XDG_CACHE_HOME are invisible until we ask the login
         // shell. Off-main (it spawns one), and rescan only if the cache moved.
@@ -647,21 +653,30 @@ class AppState: ObservableObject {
         // and a sheet with no host window is a screen nobody can see. That is
         // also why the user can no longer end up in front of nothing — whatever
         // dismisses the sheet, a composer is what was already behind it.
+    }
+
+    /// Fills the library once, then decides what the launch does with it.
+    ///
+    /// Both the welcome-vs-chat decision and the preload gate read
+    /// `localModels`, which the scan publishes; before the scan moved off the
+    /// main actor this ran synchronously inside `init`. Awaiting it here is
+    /// what keeps "Preload the model when the server starts" from resolving
+    /// against an empty list on every launch.
+    private func refreshModelsBeforeLaunch() async {
+        adoptDiscoveredModels(await libraryRefresher.scan(inputs: downloads.scanInputs()))
+
+        let hasChat = localModels.contains(where: \.isChatPickable)
         let suppressed = UserDefaults.standard.bool(forKey: LaunchDecision.suppressDefaultsKey)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            let hasChat = self.localModels.contains(where: \.isChatPickable)
-            let decision = LaunchDecision.resolve(welcomeSuppressed: suppressed,
-                                                  hasChatModels: hasChat)
-            if decision.opensChatWindow { self.pendingChatOpenTick += 1 }
-            if decision.presentsWelcome {
-                self.welcomeHasChatModels = hasChat
-                self.showWelcome = true
-            }
+        let decision = LaunchDecision.resolve(welcomeSuppressed: suppressed,
+                                              hasChatModels: hasChat)
+        if decision.opensChatWindow { pendingChatOpenTick += 1 }
+        if decision.presentsWelcome {
+            welcomeHasChatModels = hasChat
+            showWelcome = true
         }
 
         // Auto-start is headless unless "Preload the model when the server starts" resolves an installed
-        // model (`refreshModels()` above fills the library the gate checks).
+        // model.
         let launchPlan = StartupModelChoice.launch(
             autoStart: autoStartServer,
             loadModelAtStart: loadModelAtStart,

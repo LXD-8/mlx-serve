@@ -11,7 +11,16 @@ final class ModelLibraryRefresher {
     typealias Apply = @MainActor ([LocalModel]) -> Void
 
     private var generation = 0
-    private var inFlight: Task<Void, Never>?
+
+    /// The scan itself, off the main actor, with no publishing. An owner whose
+    /// next step needs the list — launch deciding whether to preload a model —
+    /// awaits this and applies the result itself.
+    func scan(
+        inputs: DownloadManager.LocalScanInputs,
+        scan: @escaping Scan = DownloadManager.discoverLocalModels
+    ) async -> [LocalModel] {
+        await Task.detached(priority: .utility) { scan(inputs) }.value
+    }
 
     /// Returns immediately; `apply` runs on the main actor once the scan lands.
     /// A scan superseded by a newer one is dropped rather than applied.
@@ -22,10 +31,11 @@ final class ModelLibraryRefresher {
     ) {
         generation &+= 1
         let generation = self.generation
-        inFlight = Task { [weak self] in
+        Task { [weak self] in
+            guard let self else { return }
             // Detached: a plain `Task` inherits the main actor and puts the walk back on it.
             let models = await Task.detached(priority: .utility) { scan(inputs) }.value
-            guard !Task.isCancelled, let self, self.generation == generation else { return }
+            guard !Task.isCancelled, self.generation == generation else { return }
             apply(models)
         }
     }
