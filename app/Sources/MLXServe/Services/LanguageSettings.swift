@@ -165,7 +165,10 @@ enum BundleLanguageOverride {
         case .catalog(let catalog):
             return catalog.localizedString(forKey: key, value: value, table: table)
         case .sourceLanguage:
-            return value ?? key
+            // Foundation treats an EMPTY value as "use the key", and that is what
+            // `NSLocalizedString` passes by default — the source language ships no
+            // `.lproj`, so returning the empty string would blank the menu item.
+            return value?.isEmpty == false ? value! : key
         }
     }
 }

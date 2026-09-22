@@ -135,6 +135,28 @@ final class LanguageSettingsTests: XCTestCase {
         )
     }
 
+    /// `NSLocalizedString` passes `value: ""` by default, and Foundation reads an
+    /// empty value as "use the key". Under the source language there is no
+    /// `.lproj` to consult, so returning that empty value would blank the item.
+    func testAnEmptyValueUnderTheSourceLanguageFallsBackToTheKey() {
+        defer { BundleLanguageOverride.apply(.system) }
+
+        BundleLanguageOverride.apply(.english, in: Self.resourcesBundle)
+        XCTAssertEqual(BundleLanguageOverride.resolution, .sourceLanguage)
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Quit", value: "", table: nil, bundle: .main, fallback: { "unused" }
+            ),
+            "Quit"
+        )
+        XCTAssertEqual(
+            BundleLanguageOverride.localizedString(
+                forKey: "Quit", value: "Quit MLX-Serve", table: nil, bundle: .main, fallback: { "unused" }
+            ),
+            "Quit MLX-Serve"
+        )
+    }
+
     /// The redirect is scoped to `Bundle.main`; another bundle keeps its own
     /// answer even while a language is selected.
     func testTheLookupDecisionLeavesOtherBundlesAlone() {
