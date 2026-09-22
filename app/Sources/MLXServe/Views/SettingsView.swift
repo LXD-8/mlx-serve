@@ -83,106 +83,23 @@ struct SettingsView: View {
                     selection = SettingsSelection.afterQueryEdit(query: q, current: selection)
                 }
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    SettingsSection(
-                        category: .modelFolders,
-                        subtitle: "Choose where downloads are saved, and add a folder to scan if some of your models live elsewhere. Every folder listed here is served — restart the server after changing them."
-                    ) {
-                        ModelFoldersSectionContent()
-                    }
-                    SettingsSection(
-                        category: .server,
-                        subtitle: "Server-launch flags. Restart the server to apply changes."
-                    ) {
-                        ServerSectionContent()
-                    }
-                    SettingsSection(
-                        category: .lanSharing,
-                        subtitle: "Share models with other Macs on your local network and use theirs — zero-setup discovery over Bonjour, everything off by default. Restart the server to apply."
-                    ) {
-                        LanSharingSectionContent()
-                    }
-                    SettingsSection(
-                        category: .providers,
-                        subtitle: "Add OpenAI-compatible chat endpoints — a cloud API, another machine, a local runtime. Their models join the picker as <model>@<name> while the provider answers. Applies on save — no restart needed."
-                    ) {
-                        ProvidersSectionContent()
-                    }
-                    // Engine-aware sections. Each panel is hidden when its
-                    // controls don't apply to the active engine — flipping
-                    // `--kv-quant` on a GGUF model silently no-ops, so we'd
-                    // rather not show that picker at all than mislead.
-                    EngineAwareSections()
-                    SettingsSection(
-                        category: .requestDefaults,
-                        subtitle: "Apply on the next chat request — no restart needed."
-                    ) {
-                        RequestDefaultsSectionContent()
-                    }
-
-                    SettingsSection(
-                        category: .interface,
-                        subtitle: "How the app looks and how you summon the Quick Launcher. Applies immediately — no restart needed."
-                    ) {
-                        InterfaceSectionContent()
-                    }
-
-                    SettingsSection(
-                        category: .voice,
-                        subtitle: "Clone your voice once — hands-free voice mode answers in it via the local TTS model. No clip set: answers use the macOS system voice. Applies to the next spoken sentence — no restart needed."
-                    ) {
-                        WakePhraseSectionContent()
-                        VoiceCloneSectionContent()
-                    }
-
-                    SettingsSection(
-                        category: .sandbox,
-                        subtitle: BuildFeatures.current.hostShell
-                            ? "Run the agent's shell commands inside an isolated Linux sandbox instead of directly on this Mac. Off by default; applies to the next command — no restart needed."
-                            : "Agent shell commands always run inside an isolated Linux sandbox in this build — they never touch macOS directly. The guest OS ships inside the app."
-                    ) {
-                        SandboxSectionContent()
-                    }
-
-                    SettingsSection(
-                        category: .messaging,
-                        subtitle: "Message your local model from your phone via a Telegram bot. No public URL or port-forwarding needed — the app long-polls Telegram over your normal internet connection, so it works behind home Wi-Fi."
-                    ) {
-                        MessagingSectionContent(bridge: appState.telegramBridge)
-                    }
-
-                    // The Mac App Store updates the app itself; a pane offering a
-                    // DMG self-update would be dead UI there (and an App Review flag).
-                    // `SettingsCategory.visible(selfUpdate:)` mirrors this so the
-                    // sidebar never lists a section that isn't built.
-                    if BuildFeatures.current.selfUpdate {
-                        SettingsSection(
-                            category: .updates,
-                            subtitle: "New versions ship on the project's GitHub releases page. Installing downloads the notarized app, swaps it in place, and relaunches — chats, models, and settings are untouched."
-                        ) {
-                            UpdatesSectionContent(updates: appState.updates)
+                // Lazy while nothing is filtered. The form is one long page, and a
+                // `ScrollView` is measured from its content: an eager stack lays
+                // every section out to answer that, which is what made opening
+                // Settings wait for a full pass before the pane appeared. With a
+                // query active the stack stays eager on purpose — the rows a lazy
+                // stack defers are exactly the ones that publish the per-section
+                // match count a section comes back on when the query changes.
+                Group {
+                    if filtering {
+                        VStack(alignment: .leading, spacing: 0) {
+                            sections
+                        }
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            sections
                         }
                     }
-
-                    // Not folded into Updates: that section is gated on
-                    // `selfUpdate`, so on a Mac App Store build these links
-                    // would never render.
-                    SettingsSection(
-                        category: .about,
-                        subtitle: "mlx-serve is free and open source, built by one person. Star it, follow along, or just say hello — questions and bug reports are welcome."
-                    ) {
-                        ForEach(CommunityLinks.all) { item in
-                            SettingsRow(title: item.title, explainer: item.explainer) {
-                                Link(L10n.text(item.actionLabel), destination: item.url)
-                            }
-                        }
-                    }
-
-                    if filtering && visibleRows == 0 {
-                        NoSearchResults(query: searchQuery) { searchQuery = "" }
-                    }
-
-                    ResetDefaultsFooter()
                 }
                 .environment(\.settingsSearchQuery, searchQuery)
                 .environment(\.settingsSelection, selection)
@@ -192,6 +109,111 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// The form's sections, in sidebar order. Extracted from `form` so the scroll
+    /// container can wrap the same content in a lazy or an eager stack.
+    @ViewBuilder
+    private var sections: some View {
+        SettingsSection(
+            category: .modelFolders,
+            subtitle: "Choose where downloads are saved, and add a folder to scan if some of your models live elsewhere. Every folder listed here is served — restart the server after changing them."
+        ) {
+            ModelFoldersSectionContent()
+        }
+        SettingsSection(
+            category: .server,
+            subtitle: "Server-launch flags. Restart the server to apply changes."
+        ) {
+            ServerSectionContent()
+        }
+        SettingsSection(
+            category: .lanSharing,
+            subtitle: "Share models with other Macs on your local network and use theirs — zero-setup discovery over Bonjour, everything off by default. Restart the server to apply."
+        ) {
+            LanSharingSectionContent()
+        }
+        SettingsSection(
+            category: .providers,
+            subtitle: "Add OpenAI-compatible chat endpoints — a cloud API, another machine, a local runtime. Their models join the picker as <model>@<name> while the provider answers. Applies on save — no restart needed."
+        ) {
+            ProvidersSectionContent()
+        }
+        // Engine-aware sections. Each panel is hidden when its
+        // controls don't apply to the active engine — flipping
+        // `--kv-quant` on a GGUF model silently no-ops, so we'd
+        // rather not show that picker at all than mislead.
+        EngineAwareSections()
+        SettingsSection(
+            category: .requestDefaults,
+            subtitle: "Apply on the next chat request — no restart needed."
+        ) {
+            RequestDefaultsSectionContent()
+        }
+
+        SettingsSection(
+            category: .interface,
+            subtitle: "How the app looks and how you summon the Quick Launcher. Applies immediately — no restart needed."
+        ) {
+            InterfaceSectionContent()
+        }
+
+        SettingsSection(
+            category: .voice,
+            subtitle: "Clone your voice once — hands-free voice mode answers in it via the local TTS model. No clip set: answers use the macOS system voice. Applies to the next spoken sentence — no restart needed."
+        ) {
+            WakePhraseSectionContent()
+            VoiceCloneSectionContent()
+        }
+
+        SettingsSection(
+            category: .sandbox,
+            subtitle: BuildFeatures.current.hostShell
+                ? "Run the agent's shell commands inside an isolated Linux sandbox instead of directly on this Mac. Off by default; applies to the next command — no restart needed."
+                : "Agent shell commands always run inside an isolated Linux sandbox in this build — they never touch macOS directly. The guest OS ships inside the app."
+        ) {
+            SandboxSectionContent()
+        }
+
+        SettingsSection(
+            category: .messaging,
+            subtitle: "Message your local model from your phone via a Telegram bot. No public URL or port-forwarding needed — the app long-polls Telegram over your normal internet connection, so it works behind home Wi-Fi."
+        ) {
+            MessagingSectionContent(bridge: appState.telegramBridge)
+        }
+
+        // The Mac App Store updates the app itself; a pane offering a
+        // DMG self-update would be dead UI there (and an App Review flag).
+        // `SettingsCategory.visible(selfUpdate:)` mirrors this so the
+        // sidebar never lists a section that isn't built.
+        if BuildFeatures.current.selfUpdate {
+            SettingsSection(
+                category: .updates,
+                subtitle: "New versions ship on the project's GitHub releases page. Installing downloads the notarized app, swaps it in place, and relaunches — chats, models, and settings are untouched."
+            ) {
+                UpdatesSectionContent(updates: appState.updates)
+            }
+        }
+
+        // Not folded into Updates: that section is gated on
+        // `selfUpdate`, so on a Mac App Store build these links
+        // would never render.
+        SettingsSection(
+            category: .about,
+            subtitle: "mlx-serve is free and open source, built by one person. Star it, follow along, or just say hello — questions and bug reports are welcome."
+        ) {
+            ForEach(CommunityLinks.all) { item in
+                SettingsRow(title: item.title, explainer: item.explainer) {
+                    Link(L10n.text(item.actionLabel), destination: item.url)
+                }
+            }
+        }
+
+        if filtering && visibleRows == 0 {
+            NoSearchResults(query: searchQuery) { searchQuery = "" }
+        }
+
+        ResetDefaultsFooter()
     }
 }
 
@@ -1139,7 +1161,14 @@ private struct ProviderModelPickerSheet: View {
     private func load() async {
         chosen = Set(entry.models)
         var key = entry.apiKey
-        if !entry.apiKeyEnv.isEmpty, let v = LoginShellEnv.values(of: [entry.apiKeyEnv])[entry.apiKeyEnv], !v.isEmpty { key = v }
+        if !entry.apiKeyEnv.isEmpty {
+            // `LoginShellEnv.values(of:)` spawns the user's login shell — blocking,
+            // and documented as off-main only. This runs from `.task`, which
+            // inherits the main actor, so it has to hop off before asking.
+            let name = entry.apiKeyEnv
+            let shell = await Task.detached(priority: .userInitiated) { LoginShellEnv.values(of: [name]) }.value
+            if let v = shell[name], !v.isEmpty { key = v }
+        }
         var lastError = "No model list at \(entry.url)"
         for url in ProviderEntry.modelsURLs(for: entry.url) {
             var req = URLRequest(url: url, timeoutInterval: 15)
