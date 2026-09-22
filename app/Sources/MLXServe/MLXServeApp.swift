@@ -222,7 +222,7 @@ struct MLXCoreApp: App {
             LayaDecisionsWindow()
                 .environmentObject(appState)
                 .environmentObject(appState.server)
-                .appAppearance()
+                .appChrome()
         }
         .defaultSize(width: 980, height: 720)
 
