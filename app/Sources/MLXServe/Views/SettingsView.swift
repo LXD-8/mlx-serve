@@ -83,13 +83,9 @@ struct SettingsView: View {
                     selection = SettingsSelection.afterQueryEdit(query: q, current: selection)
                 }
             ScrollView {
-                // Lazy while nothing is filtered. The form is one long page, and a
-                // `ScrollView` is measured from its content: an eager stack lays
-                // every section out to answer that, which is what made opening
-                // Settings wait for a full pass before the pane appeared. With a
-                // query active the stack stays eager on purpose — the rows a lazy
-                // stack defers are exactly the ones that publish the per-section
-                // match count a section comes back on when the query changes.
+                // Lazy while nothing is filtered — a `ScrollView` is measured from
+                // its content, so an eager stack lays out every section. A query
+                // stays eager: a deferred section publishes no count to collapse on.
                 Group {
                     if filtering {
                         VStack(alignment: .leading, spacing: 0) {
@@ -111,8 +107,8 @@ struct SettingsView: View {
         }
     }
 
-    /// The form's sections, in sidebar order. Extracted from `form` so the scroll
-    /// container can wrap the same content in a lazy or an eager stack.
+    /// The form's sections, in sidebar order. ONE list, so the lazy and the eager
+    /// container cannot drift.
     @ViewBuilder
     private var sections: some View {
         SettingsSection(

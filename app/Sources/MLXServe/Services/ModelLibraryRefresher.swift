@@ -2,9 +2,9 @@ import Foundation
 
 /// Runs the model-library scan off the main thread and publishes the newest result.
 ///
-/// The walk reads every served root and measured at ~1 s on a real library, and
-/// `AppState.refreshModels()` is reached from UI actions (a section switch, a
-/// finished transfer, a picker opening), so it cannot run on the main actor.
+/// The walk reads every served root, and `AppState.refreshModels()` is reached
+/// from UI actions (a section switch, a finished transfer, a picker opening), so
+/// it must not run on the main actor.
 @MainActor
 final class ModelLibraryRefresher {
     typealias Scan = @Sendable (DownloadManager.LocalScanInputs) -> [LocalModel]

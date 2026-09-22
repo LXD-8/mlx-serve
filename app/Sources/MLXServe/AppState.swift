@@ -657,10 +657,8 @@ class AppState: ObservableObject {
 
     /// Fills the library once, then decides what the launch does with it.
     ///
-    /// Both the welcome-vs-chat decision and the preload gate read
-    /// `localModels`, which the scan publishes; before the scan moved off the
-    /// main actor this ran synchronously inside `init`. Awaiting it here is
-    /// what keeps "Preload the model when the server starts" from resolving
+    /// Both the welcome-vs-chat decision and the preload gate read `localModels`,
+    /// which the scan publishes — awaiting it is what keeps them from resolving
     /// against an empty list on every launch.
     private func refreshModelsBeforeLaunch() async {
         adoptDiscoveredModels(await libraryRefresher.scan(inputs: downloads.scanInputs()))
@@ -766,9 +764,9 @@ class AppState: ObservableObject {
         await server.refreshModels()
     }
 
-    /// Rescan the model library without blocking the caller: the walk reads the
-    /// whole library (~1 s on a real one) and is reached from UI actions. Callers
-    /// that need the list caught up observe `localModels`.
+    /// Rescan the model library without blocking the caller: the walk reads every
+    /// served root, and this is reached from UI actions. Callers that need the
+    /// list caught up observe `localModels`.
     func refreshModels() {
         libraryRefresher.refresh(inputs: downloads.scanInputs()) { [weak self] models in
             self?.adoptDiscoveredModels(models)
