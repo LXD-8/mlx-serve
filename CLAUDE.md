@@ -40,7 +40,7 @@ Zig 0.17 (pinned nightly via `scripts/fetch-zig.sh`; brew 0.16 no longer builds)
 | `ollama.zig` | `/api/*` translation, SSE→NDJSON `Sink`, tags/show/ps, `resolveName` |
 | `gen.zig` | Unified media gen: modality-named engine slots, `detectModality`/`peekModelType`, per-request handlers, img2img/edit/LoRA, residency estimators |
 | `krea.zig` / `flux.zig` | Image backends (Krea-2-Turbo / FLUX.2 klein 4B+9B); `MixedLinear` infers quant geometry |
-| `qwen_image.zig` | Qwen-Image-2.1 (`qwen_image21`, quantized packs only): block-causal single-stream DiT (two sdpa calls, shared t=0/t modulation), 64-ch /16 VAE, `mage_flow.TextEncoder` at 8B width; 40 steps, real CFG, img2img; text encoder STAGED per request where the pack crowds the GPU (`gen.qwenImageStagesTextEncoder`) |
+| `qwen_image.zig` | Qwen-Image-2.1 (`qwen_image21`; converter emits quantized packs only, bf16 preset owed): block-causal single-stream DiT (two sdpa calls, shared t=0/t modulation), 64-ch /16 VAE, `mage_flow.TextEncoder` at 8B width; 40 steps, real CFG, img2img; text encoder STAGED per request where the pack crowds the GPU (`gen.qwenImageStagesTextEncoder`) |
 | `multipart.zig` | RFC 7578 form parsing, zero-copy `Part` (only non-JSON shape: `POST /v1/images/edits`) |
 | `mage_flow.zig` | MageFlow Turbo/Edit: flow DiT + DiCo VAE + Qwen3-VL TE; `MfLinear` shared with H3; DiT/TE bf16, VAE f32 (load-bearing) |
 | `hunyuan3d.zig` / `hunyuan3d_paint*.zig` | 3D shape + texture paint; converted layouts BAKE OUT per-head QKV interleaves — never "fix" it |
@@ -426,6 +426,7 @@ Weights, quant, loading:
 - **Quant resolves PER WEIGHT** (`computeQuantParams`; scales dtype decides fp8 vs affine; overrides can hide inside the fp family, `fpParamsFromGeometry`); affine bits outside {2,3,4,5,6,8} rejected at PARSE; no engine hardcodes a width (`affineParamsFromGeometry`, scan-pinned).
 - **Dense checkpoints**: scales absence PER-TENSOR (`getLayerScaleOpt`); dense contracted weights owe `maybeTransposeForBf16` — never depthwise conv or SSM state.
 - **A pack that declares its activation dtype is served in it** (`actDtype`, `LoadOpts.keep_f16`; Bonsai 2 f16 + f32 GDN state); every constant takes the activation dtype. Guard: `tests/test_hadamard_fidelity.sh`.
+- **Every new LM or media port supports a bf16 pack AND the quantized ones**: loader, converter presets and app catalog carry both; quantized is the default download, bf16 the quality reference.
 - **A gather-read table is quantized only where the READER has a quantized-gather path** (media `NEVER_QUANTIZE`; LM `embed_tokens` via `gatherQuantizedRows`).
 - **Calibrated quant**: weights per-input-channel and per-expert; bit width beats group granularity ≤3 bits; round (s,b) to the STORED dtype first; an imatrix is valid only for the WEIGHTS it was collected on; uniform ≤2-bit experts to the LAST layer cause agent loops (4-bit tail fixes it).
 - **Publish MTP head norms FOLDED** (`--fold-mtp-norms`).
