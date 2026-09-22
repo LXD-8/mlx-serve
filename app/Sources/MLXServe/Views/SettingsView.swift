@@ -24,6 +24,9 @@ struct SettingsView: View {
     /// `SettingsVisibleRowCountKey`. Drives the "no matches" placeholder.
     @State private var visibleRows = 0
 
+    /// What the sections below the containers edit — see `SettingsFormState`.
+    @State private var formState = SettingsFormState()
+
     private var filtering: Bool { !SettingsSearch.tokens(searchQuery).isEmpty }
 
     /// Categories the form actually renders for the active engine — the sidebar
@@ -99,6 +102,7 @@ struct SettingsView: View {
                 }
                 .environment(\.settingsSearchQuery, searchQuery)
                 .environment(\.settingsSelection, selection)
+                .environmentObject(formState)
                 .onPreferenceChange(SettingsVisibleRowCountKey.self) { visibleRows = $0 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 20)
@@ -947,7 +951,7 @@ private struct LanSharingSectionContent: View {
 /// (`GET /v1/providers`), never a guess made here.
 private struct ProvidersSectionContent: View {
     @EnvironmentObject var server: ServerManager
-    @State private var entries: [ProviderEntry] = ProvidersFile.load()
+    @EnvironmentObject var formState: SettingsFormState
     @State private var status: [ProviderStatus] = []
     @State private var saveError: String?
 
@@ -955,28 +959,32 @@ private struct ProvidersSectionContent: View {
         // One searchable row: a section whose content publishes no row count
         // never collapses under the filter.
         SearchableRow(searchText: ["Providers", "OpenAI-compatible chat endpoints", "cloud API", "providers.json", "API key"]
-                      + entries.map(\.name)) {
+                      + formState.providerEntries.map(\.name)) {
             providersBody
         }
     }
 
     private var providersBody: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if entries.isEmpty {
+            if formState.providerEntries.isEmpty {
                 Text("No providers yet.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-            ForEach($entries) { $entry in
+            ForEach($formState.providerEntries) { $entry in
                 ProviderRow(entry: $entry,
                             serverPort: server.port,
                             status: status.first { $0.name == entry.name },
-                            duplicate: ProvidersFile.duplicateNames(entries).contains(entry.name),
-                            onDelete: { entries.removeAll { $0.id == entry.id }; save() },
+                            duplicate: ProvidersFile.duplicateNames(formState.providerEntries).contains(entry.name),
+                            onDelete: {
+                                formState.providerEntries.removeAll { $0.id == entry.id }
+                                formState.providerModelText[entry.id] = nil
+                                save()
+                            },
                             onCommit: save)
             }
             HStack {
-                Button { entries.append(ProviderEntry()) } label: { Label("Add Provider", systemImage: "plus") }
+                Button { formState.providerEntries.append(ProviderEntry()) } label: { Label("Add Provider", systemImage: "plus") }
                 Spacer()
                 // Fields also save on Enter, but an edit followed by a click
                 // elsewhere never submits — this is the button that always writes.
@@ -1000,7 +1008,7 @@ private struct ProvidersSectionContent: View {
 
     private func save() {
         do {
-            try ProvidersFile.save(entries)
+            try ProvidersFile.save(formState.providerEntries)
             saveError = nil
         } catch {
             saveError = "Could not save providers.json: \(error.localizedDescription)"
@@ -1022,13 +1030,22 @@ private struct ProvidersSectionContent: View {
 
 private struct ProviderRow: View {
     @Binding var entry: ProviderEntry
+    @EnvironmentObject var formState: SettingsFormState
     let serverPort: UInt16
     let status: ProviderStatus?
     let duplicate: Bool
     let onDelete: () -> Void
     let onCommit: () -> Void
-    @State private var modelsText: String = ""
     @State private var picking = false
+
+    /// The model-id field's own text, held on the store: the entry keeps the
+    /// parsed ids, so a rebuilt row would otherwise show the parsed list back.
+    private var modelsText: Binding<String> {
+        Binding(
+            get: { formState.providerModelText[entry.id] ?? entry.models.joined(separator: ", ") },
+            set: { formState.providerModelText[entry.id] = $0 }
+        )
+    }
 
     private var problem: String? {
         if duplicate { return "Another provider already uses this name" }
@@ -1063,11 +1080,12 @@ private struct ProviderRow: View {
                     .onSubmit(onCommit)
             }
             HStack(spacing: 8) {
-                TextField("models", text: $modelsText, prompt: Text("Models, comma-separated — only these are exposed; empty = all the provider lists"))
+                TextField("models", text: modelsText, prompt: Text("Models, comma-separated — only these are exposed; empty = all the provider lists"))
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
-                    .onAppear { modelsText = entry.models.joined(separator: ", ") }
-                    .onChange(of: modelsText) { _, t in entry.models = ProviderEntry.parseModelList(t) }
+                    .onChange(of: formState.providerModelText[entry.id]) { _, t in
+                        entry.models = ProviderEntry.parseModelList(t ?? "")
+                    }
                     .onSubmit(onCommit)
                 Button("Pick…") { picking = true }
                     .disabled(entry.problem() != nil)
@@ -1075,7 +1093,7 @@ private struct ProviderRow: View {
             }
             .sheet(isPresented: $picking) {
                 ProviderModelPickerSheet(entry: entry) { chosen in
-                    modelsText = chosen.joined(separator: ", ")
+                    formState.providerModelText[entry.id] = chosen.joined(separator: ", ")
                     entry.models = chosen
                     onCommit()
                 }
@@ -1469,7 +1487,14 @@ private struct ServerSectionContent: View {
 private struct PortRow: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var server: ServerManager
-    @State private var text: String = ""
+    @EnvironmentObject var formState: SettingsFormState
+
+    /// The field's text lives on the store so what is being typed survives a
+    /// query edit; nil means the field has not been shown yet.
+    private var text: Binding<String> {
+        Binding(get: { formState.portText ?? "" },
+                set: { formState.portText = $0 })
+    }
 
     private var isDirty: Bool {
         guard let last = server.liveLaunchedOptions else { return false }
@@ -1483,23 +1508,25 @@ private struct PortRow: View {
                 explainer: m.explainer,
                 isDirty: isDirty
             ) {
-                TextField("", text: $text, prompt: Text("11234"))
+                TextField("", text: text, prompt: Text("11234"))
                     .textFieldStyle(.roundedBorder)
                     .font(.body.monospacedDigit())
                     .multilineTextAlignment(.trailing)
                     .frame(width: 90)
-                    .onAppear { text = "\(appState.serverOptions.port)" }
-                    .onChange(of: text) { _, newValue in
-                        if let p = ServerOptions.parsePort(newValue) {
+                    .onAppear {
+                        if formState.portText == nil { formState.portText = "\(appState.serverOptions.port)" }
+                    }
+                    .onChange(of: formState.portText) { _, newValue in
+                        if let p = ServerOptions.parsePort(newValue ?? "") {
                             appState.serverOptions.port = p
                         }
                     }
                     .onChange(of: appState.serverOptions.port) { _, newPort in
-                        if ServerOptions.parsePort(text) != newPort {
-                            text = "\(newPort)"
+                        if ServerOptions.parsePort(formState.portText ?? "") != newPort {
+                            formState.portText = "\(newPort)"
                         }
                     }
-                    .onSubmit { text = "\(appState.serverOptions.port)" }
+                    .onSubmit { formState.portText = "\(appState.serverOptions.port)" }
             }
         }
     }
@@ -2573,7 +2600,9 @@ private struct WakePhraseSectionContent: View {
 /// flag. Voice mode's `ClonedVoiceSynthesizer` re-reads the path per sentence.
 private struct VoiceCloneSectionContent: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var recorder = AudioRecorder()
+    /// The recorder is the store's, so a filter edit cannot stop a capture
+    /// mid-recording; the store builds it on the first record.
+    @EnvironmentObject var formState: SettingsFormState
     @State private var voiceError: String?
     /// Built lazily against the app's server so previews reuse the resident
     /// Kokoro model instead of loading it per click.
@@ -2724,10 +2753,8 @@ private struct VoiceCloneSectionContent: View {
             }
             HStack(spacing: 8) {
                 Button { chooseVoiceFile() } label: { Label("Choose file…", systemImage: "folder") }
-                if recorder.isRecording {
-                    Button(role: .destructive) { stopRecording() } label: {
-                        Label(L10n.format("Stop (%.1fs)", recorder.duration), systemImage: "stop.circle")
-                    }
+                if let recorder = formState.recorder {
+                    VoiceRecordControl(recorder: recorder, onRecord: startRecording, onStop: stopRecording)
                 } else {
                     Button { startRecording() } label: { Label("Record", systemImage: "mic") }
                 }
@@ -2760,13 +2787,13 @@ private struct VoiceCloneSectionContent: View {
                 voiceError = "Microphone access denied. Enable it in System Settings ▸ Privacy ▸ Microphone."
                 return
             }
-            do { try recorder.start() }
+            do { try formState.audioRecorder().start() }
             catch { voiceError = error.localizedDescription }
         }
     }
 
     private func stopRecording() {
-        guard let data = recorder.stop() else { voiceError = "Nothing was recorded."; return }
+        guard let data = formState.recorder?.stop() else { voiceError = "Nothing was recorded."; return }
         do {
             let normalized = try AudioReference.normalizedReferenceWav(fromRecordedPCM: data)
             appState.serverOptions.voiceClonePath = VoiceCloneClipStore.persist(normalized)
@@ -2780,6 +2807,24 @@ private struct VoiceCloneSectionContent: View {
     private func clearVoice() {
         appState.serverOptions.voiceClonePath = ""
         appState.serverOptions.voiceCloneLabel = ""
+    }
+}
+
+/// Record / stop for the clip row. The store owns the recorder, so this is
+/// what still observes it — the elapsed label has to tick while recording.
+private struct VoiceRecordControl: View {
+    @ObservedObject var recorder: AudioRecorder
+    let onRecord: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        if recorder.isRecording {
+            Button(role: .destructive, action: onStop) {
+                Label(L10n.format("Stop (%.1fs)", recorder.duration), systemImage: "stop.circle")
+            }
+        } else {
+            Button(action: onRecord) { Label("Record", systemImage: "mic") }
+        }
     }
 }
 
@@ -3070,15 +3115,13 @@ private struct MessagingSectionContent: View {
 /// mirrors the tray banner's one-click update.
 private struct UpdatesSectionContent: View {
     @ObservedObject var updates: UpdateChecker
-    /// Read once from `mlx-serve --version` (a print-and-exit that never boots
-    /// the server), so the embedded-engine versions show even when it's stopped.
-    @State private var engineVersions: [EngineVersion] = []
+    @EnvironmentObject var formState: SettingsFormState
 
     /// Engine rows to display — drops the `mlx-serve` app row (already shown as
     /// "Installed version"). Falls back to the compile-time llama pin so the
     /// section is never empty if the probe hasn't returned yet.
     private var engineRows: [EngineVersion] {
-        let rows = engineVersions.filter { $0.name != "mlx-serve" }
+        let rows = formState.engineVersions.filter { $0.name != "mlx-serve" }
         return rows.isEmpty
             ? [EngineVersion(name: "llama.cpp", version: UpdateChecker.bundledLlamaTag)]
             : rows
@@ -3124,8 +3167,8 @@ private struct UpdatesSectionContent: View {
             }
         }
         .task {
-            guard engineVersions.isEmpty else { return }
-            engineVersions = await EngineVersions.probe(binaryPath: ServerManager.resolveBinaryPath())
+            guard formState.engineVersions.isEmpty else { return }
+            formState.engineVersions = await EngineVersions.probe(binaryPath: ServerManager.resolveBinaryPath())
         }
 
         if let update = updates.available {
