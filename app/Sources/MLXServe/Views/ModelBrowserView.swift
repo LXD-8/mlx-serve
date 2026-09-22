@@ -55,11 +55,7 @@ struct ModelBrowserPane: View {
                 await searchService.search()
             }
         }
-        // Only a pane that shows disk state needs the library re-read, and the
-        // re-read is off-main, so a switch never waits for it.
-        .onChange(of: section) { _, next in
-            if next.showsDiskState { appState.refreshModels() }
-        }
+        .onChange(of: section) { _, _ in appState.refreshModels() }
         // Live-refresh on-disk sizes while a disk-state pane is showing and a
         // download is in flight, so completion + growing size show up without
         // the user navigating away and back. The task id flips when the section
