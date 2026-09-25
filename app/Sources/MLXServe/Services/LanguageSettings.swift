@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The app's own UI language (Settings ▸ Interface ▸ Language).
 ///
@@ -86,8 +87,14 @@ enum BundleLanguageOverride {
         case sourceLanguage
     }
 
-    /// What the override resolves against.
-    private(set) static var resolution: Resolution = .system
+    /// What the override resolves against. `L10n.text` reads it from whatever thread
+    /// produced the copy (services, notification posts) while the setting writes it on
+    /// the main thread, so the state is behind a lock rather than a bare static.
+    private static let resolutionLock = OSAllocatedUnfairLock(initialState: Resolution.system)
+    private(set) static var resolution: Resolution {
+        get { resolutionLock.withLock { $0 } }
+        set { resolutionLock.withLock { $0 = newValue } }
+    }
 
     /// The bundle the override resolves against; nil unless a catalog is in use.
     static var languageBundle: Bundle? {
