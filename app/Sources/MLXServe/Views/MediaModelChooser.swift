@@ -212,9 +212,9 @@ struct MediaModelChooser<P: MediaModelSizing>: View {
             onSelect(preset)
         } label: {
             if lanModel == nil && preset.id == selectedId {
-                Label(L10n.text(title), systemImage: "checkmark")
+                Label(L10n.text(title), systemImage: "checkmark").font(.app(.body))
             } else {
-                Text(L10n.text(title))
+                Text(L10n.text(title)).font(.app(.body))
             }
         }
     }

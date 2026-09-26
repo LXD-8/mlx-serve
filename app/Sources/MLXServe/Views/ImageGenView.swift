@@ -123,13 +123,15 @@ struct ImageGenView: View {
             .frame(minWidth: 280)
         }
         .alert("Model exceeds your Mac's RAM", isPresented: $showRAMWarning) {
-            Button("Cancel", role: .cancel) { pendingRequest = nil }
-            Button("Generate Anyway", role: .destructive) {
+            Button(role: .cancel) { pendingRequest = nil } label: { Text("Cancel")
+    .font(.app(.body)) }
+            Button(role: .destructive) {
                 if let req = pendingRequest { service.generate(req, server: server) }
                 pendingRequest = nil
-            }
+            } label: { Text("Generate Anyway")
+    .font(.app(.body)) }
         } message: {
-            Text(L10n.text(ramWarningMessage))
+            Text(L10n.text(ramWarningMessage)).font(.app(.body))
         }
     }
 
@@ -147,7 +149,8 @@ struct ImageGenView: View {
                     ForEach(model.promptExamples(editing: isEditing), id: \.name) { group in
                         Menu(group.name) {
                             ForEach(group.examples, id: \.title) { ex in
-                                Button(L10n.text(ex.title)) { prompt = ex.body; persist() }
+                                Button { prompt = ex.body; persist() } label: { Text(L10n.text(ex.title))
+    .font(.app(.body)) }
                             }
                         }
                     }
@@ -189,7 +192,7 @@ struct ImageGenView: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .fixedSize()
-                    .onChange(of: editMode) { _, _ in guard !hydrating else { return }; persist() }
+                    .onChange(of: editMode) { _, _ in guard !hydrating else { return }; persist() }.font(.app(.body))
                 }
             }
             if let url = initImageURL {
@@ -398,7 +401,7 @@ struct ImageGenView: View {
             Text("Resolution").font(.app(.subheadline).weight(.semibold))
             Picker("", selection: $resolution) {
                 ForEach(model.resolutionOptions(editMode: isEditing)) { r in
-                    Text(L10n.text(r.label)).tag(r)
+                    Text(L10n.text(r.label)).font(.app(.body)).tag(r)
                 }
             }
             .labelsHidden()
@@ -446,7 +449,7 @@ struct ImageGenView: View {
             Text(L10n.text(title)).font(.app(.caption2)).foregroundStyle(.secondary)
             TextField("", text: text)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
+                .frame(width: 80).font(.app(.body))
         }
     }
 
@@ -714,7 +717,7 @@ struct ImageGenView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(L10n.text(label)).font(.app(.caption))
             Stepper(value: value, step: step) {
-                Text(String(value.wrappedValue))
+                Text(String(value.wrappedValue)).font(.app(.body))
             }
         }
     }
@@ -759,7 +762,7 @@ struct ImageGenView: View {
             Group {
                 switch service.phase {
                 case .idle:
-                    ContentUnavailableView("No generation yet", systemImage: "photo", description: Text("Enter a prompt and press Generate."))
+                    ContentUnavailableView("No generation yet", systemImage: "photo", description: Text("Enter a prompt and press Generate.").font(.app(.body)))
                 case .running(let step, let total, let message):
                     VStack(spacing: 12) {
                         ProgressView(value: Double(step), total: max(1, Double(total)))
@@ -771,11 +774,12 @@ struct ImageGenView: View {
                     completedPreview(path: path)
                 case .failed(let msg):
                     ContentUnavailableView {
-                        Label("Failed", systemImage: "exclamationmark.triangle")
+                        Label("Failed", systemImage: "exclamationmark.triangle").font(.app(.body))
                     } description: {
                         Text(msg)
                     } actions: {
-                        Button("Show log") { showLogWindow() }
+                        Button { showLogWindow() } label: { Text("Show log")
+    .font(.app(.body)) }
                     }
                 }
             }
