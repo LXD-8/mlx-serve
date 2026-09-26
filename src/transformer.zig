@@ -7000,6 +7000,8 @@ pub const KVCacheEntry = struct {
     offset: usize, // logical token count (may be < buffer capacity)
     initialized: bool,
     shared_view: bool = false,
+    /// Rows the restored snapshot had written; only read while `shared_view`.
+    shared_rows: usize = 0,
 };
 
 /// Materialized dense `[B,H,T,D]` K/V pair handed to SDPA. Owns its arrays
@@ -7285,6 +7287,7 @@ pub const KVCache = struct {
                     try mlx.check(mlx.mlx_array_set(&dst.values_biases, src.values_biases));
                 }
                 dst.shared_view = true;
+                dst.shared_rows = src.offset;
             }
         }
         self.step = snap.step;
@@ -7594,7 +7597,8 @@ pub const KVCache = struct {
         const sc_last = sc_shape[3];
         const vsc_last = vsc_shape[3];
 
-        const will_grow = !entry.initialized or entry.offset + new_len > bufferCapacity(entry.keys);
+        const oversized = self.restoredOversized(entry, new_len);
+        const will_grow = !entry.initialized or oversized or entry.offset + new_len > bufferCapacity(entry.keys);
         if (entry.shared_view) {
             if (entry.initialized and !will_grow) try cowAffineBuffers(s, entry);
             entry.shared_view = false;
@@ -7603,7 +7607,7 @@ pub const KVCache = struct {
         // 4. Grow buffers if needed (6 of them, in lockstep on the seq axis).
         if (will_grow) {
             const needed = entry.offset + new_len;
-            const cur_cap = if (entry.initialized) bufferCapacity(entry.keys) else 0;
+            const cur_cap = if (oversized) entry.offset else if (entry.initialized) bufferCapacity(entry.keys) else 0;
             const new_cap: c_int = @intCast(self.nextCapacityReserved(cur_cap, needed));
             kv_cap_buf_grows += 1;
             try growQuantBuf(s, &entry.keys, entry.initialized, entry.offset, new_cap, B, heads, q_last, .uint32);
@@ -7651,6 +7655,13 @@ pub const KVCache = struct {
         try buildSliceView(s, &entry.value_biases_view, entry.values_biases, total, view_start);
     }
 
+    /// A restore that kept only a short prefix of a longer entry regrows from that prefix instead
+    /// of copying the whole buffer: a "hi" session restored from an 80k one kept the 80k capacity.
+    fn restoredOversized(self: *const KVCache, entry: *const KVCacheEntry, new_len: usize) bool {
+        if (!entry.initialized or !entry.shared_view) return false;
+        return entry.shared_rows > self.nextCapacityReserved(entry.offset, entry.offset + new_len);
+    }
+
     fn cowAffineBuffers(s: mlx.mlx_stream, entry: *KVCacheEntry) !void {
         const bufs = [_]*mlx.mlx_array{
             &entry.keys,
@@ -7688,7 +7699,8 @@ pub const KVCache = struct {
         const new_len: usize = @intCast(new_shape[2]);
         const v_head_dim = mlx.getShape(new_v)[3];
 
-        const will_grow = !entry.initialized or entry.offset + new_len > bufferCapacity(entry.keys);
+        const oversized = self.restoredOversized(entry, new_len);
+        const will_grow = !entry.initialized or oversized or entry.offset + new_len > bufferCapacity(entry.keys);
         if (entry.shared_view) {
             if (entry.initialized and !will_grow) {
                 const k_owned = try materializedOwnedCopy(s, entry.keys);
@@ -7708,7 +7720,7 @@ pub const KVCache = struct {
             const head_dim = new_shape[3];
             const dtype = mlx.mlx_array_dtype(new_k);
             const needed = entry.offset + new_len;
-            const cur_cap = if (entry.initialized) bufferCapacity(entry.keys) else 0;
+            const cur_cap = if (oversized) entry.offset else if (entry.initialized) bufferCapacity(entry.keys) else 0;
             const new_cap: c_int = @intCast(self.nextCapacityReserved(cur_cap, needed));
             kv_cap_buf_grows += 1;
             const initialized = entry.initialized;
@@ -17615,19 +17627,16 @@ pub const Transformer = struct {
         const h_shape = mlx.getShape(h);
 
         // mask = (token_ids == image_token_id) [| (token_ids == audio_token_id)].
-        // Gemma 4 12B unified splices both modalities through this one channel:
-        // the embedding tensor concatenates [vision rows ; audio rows] in the
-        // same order the placeholder blocks were injected into the prompt, so a
-        // single sequence-order scatter lands each row in its slot.
+        // Every modality splices through this one channel: the embedding tensor
+        // concatenates each item's rows in prompt order, so a single
+        // sequence-order scatter lands each row in its slot.
         const img_id_arr = mlx.mlx_array_new_int(@intCast(image_token_id));
         defer _ = mlx.mlx_array_free(img_id_arr);
         var mask_2d = mlx.mlx_array_new();
         defer _ = mlx.mlx_array_free(mask_2d);
         try mlx.check(mlx.mlx_equal(&mask_2d, token_ids, img_id_arr, s));
         // Qwen video pads (`video_token_id`) and Gemma audio pads ride the same
-        // row stream in prompt order — the encoder output is concatenated
-        // [image ; video ; audio] the way `insertMultimodalTokens` lays the
-        // placeholder runs out.
+        // row stream: the encoder output is concatenated in prompt order.
         for ([_]u32{ audio_token_id, video_token_id }) |extra_id| {
             if (extra_id == 0) continue;
             const extra_arr = mlx.mlx_array_new_int(@intCast(extra_id));
@@ -40778,6 +40787,43 @@ test "KVCache snapshot then more updates does not corrupt the snapshot" {
     try cache.restore(&snap);
     try testing.expectEqual(@as(usize, 2), cache.entries[0].offset);
     try testing.expectEqual(@as(usize, 2), cache.step);
+}
+
+test "KVCache: an append after a short restore sizes its copy from the prefix, not the donor (#492)" {
+    // A 4k "hi" session restored from an 80k agent session's entry kept an 80k-capacity copy,
+    // and its commit evicted the agent session to fit the budget.
+    const s = mlx.gpuStream();
+    const mk = struct {
+        fn f(str: mlx.mlx_stream, len: c_int) !mlx.mlx_array {
+            const shape = [_]c_int{ 1, 2, len, 64 };
+            var a = mlx.mlx_array_new();
+            try mlx.check(mlx.mlx_ones(&a, &shape, 4, .bfloat16, str));
+            return a;
+        }
+    }.f;
+    for ([_]kv_quant.KVQuantConfig{ kv_quant.KVQuantConfig.dense, kv_quant.KVQuantConfig.affine(8) }) |cfg| {
+        var donor = try KVCache.initWithConfig(testing.allocator, 1, cfg);
+        defer donor.deinit();
+        {
+            const k = try mk(s, 8192);
+            defer _ = mlx.mlx_array_free(k);
+            _ = try donor.update(0, k, k, s, 0);
+        }
+        var snap = try donor.snapshot();
+        defer snap.deinit();
+
+        var cache = try KVCache.initWithConfig(testing.allocator, 1, cfg);
+        defer cache.deinit();
+        try cache.restore(&snap);
+        try cache.truncate(100, s);
+        const k = try mk(s, 1);
+        defer _ = mlx.mlx_array_free(k);
+        _ = try cache.update(0, k, k, s, 0);
+
+        try testing.expectEqual(@as(usize, 101), cache.entries[0].offset);
+        try testing.expect(KVCache.bufferCapacity(cache.entries[0].keys) <= 512);
+        try testing.expect(KVCache.bufferCapacity(snap.entries[0].keys) >= 8192);
+    }
 }
 
 test "KVCache snapshot/restore in a tight loop does not leak" {
