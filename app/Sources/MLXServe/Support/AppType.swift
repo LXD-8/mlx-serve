@@ -104,8 +104,8 @@ enum AppType {
 extension Font {
     /// The ladder, by role: the step says what the text IS, so two views that
     /// mean the same thing cannot pick two different sizes.
-    static func app(_ role: AppType.Role) -> Font {
-        .app(role.step)
+    static func app(_ role: AppType.Role, weight: Font.Weight? = nil, design: Font.Design? = nil) -> Font {
+        .app(role.step, weight: weight, design: design)
     }
 }
 

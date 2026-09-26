@@ -1820,14 +1820,15 @@ struct ChatSidebar: View {
                                   badge: Int = 0) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
-                .font(.app(.headline, weight: .medium))
+                .font(.app(.rowTitle, weight: .medium))
                 .frame(width: 16)
-            // 14, not `.subheadline`(12): a sidebar row names a place the same
-            // way a settings row names a setting, and the two were a step apart.
+            // `rowTitle`, the same role a settings row uses: a sidebar row
+            // names a place, a settings row names a setting, and both were
+            // rendering at 14 while the sidebar's was named `.headline`.
             // The selected row is already marked by its own background, so the
             // weight stays the same for every row — size carries the level.
             Text(L10n.text(title))
-                .font(.app(.headline, weight: .medium))
+                .font(.app(.rowTitle, weight: .medium))
             Spacer(minLength: 4)
             if badge > 0 {
                 Text("\(badge)")
