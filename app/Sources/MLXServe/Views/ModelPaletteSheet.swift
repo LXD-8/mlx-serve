@@ -74,7 +74,7 @@ struct ModelPaletteSheet: View {
                 .foregroundStyle(.secondary)
             TextField("Search models…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 17))
+                .font(.system(.title2))
                 .focused($searchFocused)
                 .onSubmit { pickSelected() }
                 .onKeyPress(.upArrow) { moveSelection(-1) }
@@ -122,7 +122,7 @@ struct ModelPaletteSheet: View {
                 // highlight says which one Return would load. Two different
                 // facts, so they are two different marks.
                 Image(systemName: row.tag == currentTag ? "checkmark" : "cpu")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(.callout).weight(.medium))
                     .foregroundStyle(row.tag == currentTag ? Color.accentColor : .secondary)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {

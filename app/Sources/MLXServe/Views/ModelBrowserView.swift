@@ -113,7 +113,7 @@ private struct ModelBrowserSectionBar: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: item.systemImage)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(.subheadline).weight(.medium))
                 Text(L10n.text(item.title)).font(.callout).lineLimit(1)
                 if item == .downloads, isDownloading {
                     ProgressView()
@@ -483,7 +483,7 @@ private struct RecommendedModelTableRow: View {
                 .font(.caption.monospacedDigit().weight(.medium))
             HStack(spacing: 3) {
                 Image(systemName: fitIcon)
-                    .font(.system(size: 9))
+                    .font(.system(.caption2))
                 Text(L10n.text(fit.label))
                     .font(.caption2)
             }
@@ -555,7 +555,7 @@ private struct RecommendedModelTableRow: View {
                     ProgressView(value: state.progress)
                         .frame(width: 70)
                     Text("\(state.percentFormatted) \(state.speedFormatted)")
-                        .font(.system(size: 9).monospacedDigit())
+                        .font(.system(.caption2).monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 Button {
@@ -574,7 +574,7 @@ private struct RecommendedModelTableRow: View {
                     .controlSize(.small)
                 if let error = state.error {
                     Text(error)
-                        .font(.system(size: 9))
+                        .font(.system(.caption2))
                         .foregroundStyle(.red)
                         .lineLimit(1)
                 }
@@ -1028,7 +1028,7 @@ private struct MediaModelRow<Preset: MediaModelPreset>: View {
 
                 if let active, active.state.status == .failed, let error = active.state.error {
                     Text(error)
-                        .font(.system(size: 9))
+                        .font(.system(.caption2))
                         .foregroundStyle(.red)
                         .lineLimit(1)
                 }
@@ -1080,7 +1080,7 @@ private struct MediaModelRow<Preset: MediaModelPreset>: View {
                     ProgressView(value: active.state.progress)
                         .frame(width: 70)
                     Text("\(active.state.percentFormatted) \(active.state.speedFormatted)")
-                        .font(.system(size: 9).monospacedDigit())
+                        .font(.system(.caption2).monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 Button {
@@ -1302,7 +1302,7 @@ private struct SortableHeader: View {
                     Text(L10n.text(title))
                     if isActive {
                         Image(systemName: searchService.sortDescending ? "chevron.down" : "chevron.up")
-                            .font(.system(size: 8))
+                            .font(.system(.caption2))
                     }
                 }
                 .contentShape(Rectangle())
@@ -1345,7 +1345,7 @@ private struct ModelBrowserRow: View {
                         .lineLimit(1)
                     if let reason = model.incompatibleReason {
                         Text(reason)
-                            .font(.system(size: 10))
+                            .font(.system(.caption2))
                             .foregroundStyle(.red.opacity(0.8))
                             .lineLimit(1)
                     }
@@ -1360,7 +1360,7 @@ private struct ModelBrowserRow: View {
             Group {
                 if let quant = model.quantization {
                     Text(L10n.text(quant))
-                        .font(.system(size: 10).weight(.medium))
+                        .font(.system(.caption2).weight(.medium))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(.quaternary)
@@ -1570,7 +1570,7 @@ private struct ModelBrowserRow: View {
                 ProgressView(value: progress)
                     .frame(width: 50)
                 Text(state?.percentFormatted ?? "")
-                    .font(.system(size: 9).monospacedDigit())
+                    .font(.system(.caption2).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             Button {
@@ -1892,7 +1892,7 @@ private struct LocalModelRow: View {
                     // this library unnoticed while the server registered both.
                     if let defect = model.defect {
                         Text(L10n.text(defect.label))
-                            .font(.system(size: 10).weight(.medium))
+                            .font(.system(.caption2).weight(.medium))
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.15), in: Capsule())
@@ -1900,7 +1900,7 @@ private struct LocalModelRow: View {
                     }
                     if model.kind == .drafter {
                         Text("Drafter")
-                            .font(.system(size: 10).weight(.medium))
+                            .font(.system(.caption2).weight(.medium))
                             .foregroundStyle(.purple)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.purple.opacity(0.15), in: Capsule())
@@ -1928,13 +1928,13 @@ private struct LocalModelRow: View {
                     // Capability icons mirror the search rows.
                     if model.hasVision {
                         Image(systemName: "eye")
-                            .font(.system(size: 9))
+                            .font(.system(.caption2))
                             .foregroundStyle(.secondary)
                             .help("Vision (image input)")
                     }
                     if model.hasToolCalling {
                         Image(systemName: "wrench")
-                            .font(.system(size: 9))
+                            .font(.system(.caption2))
                             .foregroundStyle(.secondary)
                             .help("Tool calling")
                     }
@@ -1943,7 +1943,7 @@ private struct LocalModelRow: View {
                     // intentionally — the badge above already explains them.
                     if model.kind != .drafter, !model.isSupportedArchitecture {
                         Text("Unsupported")
-                            .font(.system(size: 10).weight(.medium))
+                            .font(.system(.caption2).weight(.medium))
                             .foregroundStyle(.red.opacity(0.8))
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.red.opacity(0.12), in: Capsule())
@@ -2125,7 +2125,7 @@ private struct ActiveDownloadRow: View {
                         ProgressView(value: state.progress)
                             .frame(width: 80)
                         Text("\(state.percentFormatted) \(state.speedFormatted)")
-                            .font(.system(size: 9).monospacedDigit())
+                            .font(.system(.caption2).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                     Button {

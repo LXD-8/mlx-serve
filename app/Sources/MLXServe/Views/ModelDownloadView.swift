@@ -48,7 +48,7 @@ struct ModelDownloadRow: View {
                             ProgressView(value: state.progress)
                                 .frame(width: 60)
                             Text("\(state.percentFormatted) \(state.speedFormatted)")
-                                .font(.system(size: 8).monospacedDigit())
+                                .font(.system(.caption2).monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                         Button {
@@ -83,14 +83,14 @@ struct ModelDownloadRow: View {
             // Status text for active downloads
             if let state, state.status == .downloading, !state.statusText.isEmpty {
                 Text("[\(state.fileIndex)/\(state.fileCount)] \(state.statusText)")
-                    .font(.system(size: 9))
+                    .font(.system(.caption2))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             if let state, state.status == .failed, let error = state.error {
                 Text(error)
-                    .font(.system(size: 9))
+                    .font(.system(.caption2))
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }

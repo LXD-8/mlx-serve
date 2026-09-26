@@ -222,7 +222,7 @@ struct StatusMenuView: View {
             TrayStatusChip(status: server.status)
             Button { openSettings() } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(.body).weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
@@ -1011,11 +1011,11 @@ struct EndpointsSection: View {
                 } label: {
                     HStack(spacing: 4) {
                         Text("GET")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(.system(.caption2, design: .monospaced).bold())
                             .foregroundStyle(.green)
                             .frame(width: 30, alignment: .leading)
                         Text(L10n.text(baseURL + "/"))
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.blue)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1044,11 +1044,11 @@ struct EndpointsSection: View {
                          copyKey: String, copyString: String) -> some View {
         HStack(spacing: 4) {
             Text(L10n.text(method))
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(.system(.caption2, design: .monospaced).bold())
                 .foregroundStyle(method == "GET" ? .green : .blue)
                 .frame(width: 30, alignment: .leading)
             Text(L10n.text(display))
-                .font(.system(size: 10, design: .monospaced))
+                .font(.system(.caption2, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
@@ -1216,7 +1216,7 @@ struct ServerLogWindowView: View {
             // only when the log transitions to/from empty.
             if poller.text.isEmpty {
                 Text("(server has produced no output yet)")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity,
@@ -1268,7 +1268,7 @@ struct TerminalLogTextView: NSViewRepresentable {
     let text: String
     let autoScroll: Bool
 
-    private static let textFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private static let textFont = NSFont.monospacedSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .regular)
     private static let textColor = NSColor(red: 0.86, green: 0.95, blue: 0.88, alpha: 1.0)
     private static let bg = NSColor.black
 

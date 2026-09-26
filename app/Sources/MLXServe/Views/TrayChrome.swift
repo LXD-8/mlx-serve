@@ -158,7 +158,7 @@ struct TrayFeatureRow<Trailing: View>: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(.body).weight(.medium))
                 .foregroundStyle(isOn ? tint : Color.secondary)
                 .frame(width: 17)
             VStack(alignment: .leading, spacing: 1) {
@@ -285,7 +285,7 @@ struct TrayTileFace: View {
             // Glyphs differ in height (speedometer is taller than the chat
             // bubbles); a fixed box keeps every tile's title on one baseline.
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .regular))
+                .font(.system(.title3))
                 .foregroundStyle(isEnabled ? tint : Color.secondary)
                 .frame(height: 18)
             Text(L10n.text(title))

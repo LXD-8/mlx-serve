@@ -108,7 +108,7 @@ struct WebSourcesChip: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(.caption2).weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 8)
@@ -121,7 +121,7 @@ struct WebSourcesChip: View {
 
             if expanded {
                 Text("\(sources.count) WEB SOURCE\(sources.count == 1 ? "" : "S")")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(.caption2).weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .padding(.top, 2)
                 VStack(spacing: 4) {
@@ -149,7 +149,7 @@ struct WebSourcesChip: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(.caption2).weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 10)

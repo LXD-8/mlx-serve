@@ -1355,7 +1355,7 @@ struct VideoGenView: View {
                                 .fill(Color(nsColor: .windowBackgroundColor))
                                 .frame(width: 17, height: 17)
                             Image(systemName: "multiply.circle.fill")
-                                .font(.system(size: 14))
+                                .font(.system(.body))
                                 .foregroundStyle(.secondary)
                         }
                     }

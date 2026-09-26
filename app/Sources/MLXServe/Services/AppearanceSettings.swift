@@ -113,26 +113,29 @@ enum ChatTextSize: String, CaseIterable, Identifiable {
         case .xlarge: return "Extra Large"
         }
     }
-    /// Prose size (`ChatMetrics.transcriptFontSize`). `.medium` is the size
-    /// this shipped with before the setting existed — changing it moves
-    /// everyone, changing the others doesn't.
+    /// The transcript follows the system's text size like everything else: each
+    /// step is an offset from the system body size, so the setting scales the
+    /// transcript *relative* to the user's setting. `.medium` is the offset the
+    /// app shipped with.
+    private static var systemBody: CGFloat { NSFont.preferredFont(forTextStyle: .body).pointSize }
+    /// Prose size (`ChatMetrics.transcriptFontSize`).
     var proseSize: CGFloat {
         switch self {
-        case .small: return 12
-        case .medium: return 14
-        case .large: return 16
-        case .xlarge: return 19
+        case .small: return Self.systemBody - 1
+        case .medium: return Self.systemBody + 1
+        case .large: return Self.systemBody + 3
+        case .xlarge: return Self.systemBody + 6
         }
     }
     /// Fenced/inline code size (`ChatMetrics.transcriptCodeFontSize`) — kept
-    /// 1–2pt under prose at every step (mono glyphs run wide, so code at
-    /// prose size reads larger than the sentence around it).
+    /// 2pt under prose at every step (mono glyphs run wide, so code at prose
+    /// size reads larger than the sentence around it).
     var codeSize: CGFloat {
         switch self {
-        case .small: return 11
-        case .medium: return 13
-        case .large: return 15
-        case .xlarge: return 17
+        case .small: return Self.systemBody - 2
+        case .medium: return Self.systemBody
+        case .large: return Self.systemBody + 2
+        case .xlarge: return Self.systemBody + 4
         }
     }
 }

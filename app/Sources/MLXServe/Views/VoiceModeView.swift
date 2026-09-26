@@ -155,7 +155,7 @@ struct VoiceComposerToggle: View {
             }
         } label: {
             Image(systemName: "waveform")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(.body).weight(.medium))
                 .foregroundStyle(ownedHere ? Color.white : Color.secondary)
                 .frame(width: ChatMetrics.composerIconSize, height: ChatMetrics.composerIconSize)
                 .background(ownedHere ? Color.accentColor : Color.secondary.opacity(0.15))

@@ -893,7 +893,7 @@ struct MusicGenView: View {
                 .fill(.tint)
                 .frame(width: 64, height: 64)
             Image(systemName: "music.note.list")
-                .font(.system(size: 32))
+                .font(.system(.largeTitle))
                 .blendMode(.destinationOut)
                 .symbolEffect(.bounce.down.byLayer, options: .repeat(.continuous), isActive: playing)
         }

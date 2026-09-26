@@ -84,7 +84,7 @@ struct ToolApprovalSheet: View {
                 if argPairs.isEmpty && !request.rawArguments.isEmpty {
                     ScrollView {
                         Text(L10n.text(request.rawArguments))
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(.subheadline, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
@@ -102,10 +102,10 @@ struct ToolApprovalSheet: View {
                             ForEach(argPairs, id: \.0) { (k, v) in
                                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                                     Text(L10n.text(k))
-                                        .font(.system(size: 11, design: .monospaced).weight(.semibold))
+                                        .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                                         .foregroundStyle(.secondary)
                                     Text(L10n.text(v))
-                                        .font(.system(size: 11, design: .monospaced))
+                                        .font(.system(.subheadline, design: .monospaced))
                                         .textSelection(.enabled)
                                         .lineLimit(8)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -187,7 +187,7 @@ private struct AttachmentPreviewRow: View {
     private func removeButton(_ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 14))
+                .font(.system(.body))
                 .foregroundStyle(.white)
                 .background(Circle().fill(.black.opacity(0.5)))
         }
@@ -212,7 +212,7 @@ private struct AttachmentPreviewRow: View {
         ZStack(alignment: .topTrailing) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 18))
+                    .font(.system(.title2))
                     .foregroundStyle(.white)
                     .frame(width: 32, height: 32)
                     .background(tint.opacity(0.85))
@@ -247,7 +247,7 @@ private struct DocumentFolderChip: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
-                .font(.system(size: 18))
+                .font(.system(.title2))
                 .foregroundStyle(.white)
                 .frame(width: 32, height: 32)
                 .background(tint.opacity(0.85))
@@ -268,7 +268,7 @@ private struct DocumentFolderChip: View {
             }
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
+                    .font(.system(.body))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -316,7 +316,7 @@ private struct MicButton: View {
         Button(action: toggle) {
             HStack(spacing: 4) {
                 Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(.callout).weight(.medium))
                 if recorder.isRecording {
                     Text(timeString(recorder.duration))
                         .font(.caption2.monospacedDigit().weight(.medium))
@@ -1297,24 +1297,24 @@ struct ChatSidebar: View {
         switch dot {
         case .generating:
             Image(systemName: "inset.filled.circle")
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.green)
                 .symbolEffect(.pulse.byLayer, options: .repeat(.continuous))
                 .help("Generating")
         case .tool:
             Image(systemName: "inset.filled.circle.dashed")
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.blue)
                 .symbolEffect(.rotate.clockwise.byLayer, options: .repeat(.continuous))
                 .help("Running a tool")
         case .finished:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                 .help("Finished")
         case .attention:
             Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.orange)
                 .help("Stopped with an error")
         }
@@ -1419,7 +1419,7 @@ struct ChatSidebar: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(.headline))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
@@ -1459,19 +1459,19 @@ struct ChatSidebar: View {
                 HStack(spacing: 4) {
                     if session.isExternalBridge {
                         Image(systemName: "paperplane.fill")
-                            .font(.system(size: 9))
+                            .font(.system(.caption2))
                             .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.accentColor)
                             .help("Telegram conversation (view only)")
                     }
                     if let agent {
                         Image(systemName: agent.symbol)
-                            .font(.system(size: 10))
+                            .font(.system(.caption2))
                             .foregroundStyle(Color.accentColor)
                     } else if !session.isExternalBridge {
                         // Every row in this column carries a glyph saying what
                         // it is — a terminal, an agent, a plain conversation.
                         Image(systemName: "bubble.left")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(.subheadline).weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                     let displayTitle = ChatSessionTitle.display(title: session.title,
@@ -1548,7 +1548,7 @@ struct ChatSidebar: View {
                     requestDeleteChats([session.id], keyboard: false)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
+                        .font(.system(.body))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.secondary)
                 }
@@ -1588,7 +1588,7 @@ struct ChatSidebar: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: t.isInOwnWindow ? "macwindow" : "terminal")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(.subheadline).weight(.medium))
                     .foregroundStyle(terminalTint(t.phase))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n.text(t.displayName))
@@ -1624,7 +1624,7 @@ struct ChatSidebar: View {
                     requestCloseTerminal(t.id)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
+                        .font(.system(.body))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.secondary)
                 }
@@ -1800,7 +1800,7 @@ struct ChatSidebar: View {
                                   badge: Int = 0) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(.callout).weight(.medium))
                 .frame(width: 16)
             Text(L10n.text(title)).font(.subheadline.weight(.medium))
             Spacer(minLength: 4)
@@ -2056,7 +2056,7 @@ struct ChatDetailView: View {
                     if control == .starting {
                         ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 10, height: 10)
                     } else {
-                        Image(systemName: "play.fill").font(.system(size: 9, weight: .bold))
+                        Image(systemName: "play.fill").font(.system(.caption2).bold())
                     }
                     Text(L10n.text(control.title))
                         .font(.caption.weight(.semibold))
@@ -2099,7 +2099,7 @@ struct ChatDetailView: View {
             }
         } label: {
             Image(systemName: "paperclip")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(.body).weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(width: ChatMetrics.composerIconSize, height: ChatMetrics.composerIconSize)
                 .background(Color.secondary.opacity(0.15))
@@ -2128,7 +2128,7 @@ struct ChatDetailView: View {
     private func modeIcon(_ icon: String, isOn: Bool, onColor: Color,
                           lockedBy: String? = nil) -> some View {
         Image(systemName: icon)
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(.body).weight(.medium))
             .foregroundStyle(isOn ? onColor : Color.secondary)
             .frame(width: ChatMetrics.composerIconSize, height: ChatMetrics.composerIconSize)
             .background(isOn ? onColor.opacity(0.20) : Color.secondary.opacity(0.15))
@@ -2444,7 +2444,7 @@ struct ChatDetailView: View {
             // inversion the sidebar rows had). Under it, what the agent is
             // FOR, which is what tells you what to ask it.
             Text(ChatGreeting.heading(agentName: activeAgent?.name))
-                .font(.system(size: 30, weight: .semibold))
+                .font(.system(.largeTitle).weight(.semibold))
                 .foregroundStyle(.primary)
             if let subtitle = ChatGreeting.subtitle(agentBrief: activeAgent?.brief,
                                                     serverRunning: canAnswer) {
@@ -3605,7 +3605,7 @@ struct ChatDetailView: View {
     private var jumpToLatestButton: some View {
         Button { applyScroll(.jumpTapped) } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(.callout).weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 28, height: 28)
                 .background(.regularMaterial, in: Circle())
@@ -4061,7 +4061,7 @@ struct GeneratingIndicator: View {
                     .monospacedDigit()
             }
         }
-        .font(.system(size: 10, weight: .medium, design: .monospaced))
+        .font(.system(.caption2, design: .monospaced).weight(.medium))
         .onAppear {
             startDate = Date()
             pollMetrics()
@@ -4925,7 +4925,7 @@ private struct FooterIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .scaleEffect(y: flipped ? -1 : 1)
                 .foregroundStyle(.secondary)
                 .frame(width: 20, height: 18)
@@ -5404,7 +5404,7 @@ private struct RunningIndicator: View {
             // By hand: `.symbolEffect(.scale)` has nothing to move on
             // `circle.fill`.
             Image(systemName: "circle.fill")
-                .font(.system(size: 7))
+                .font(.system(.caption2))
                 .foregroundStyle(ink)
                 .scaleEffect(pulsing ? 0.55 : 1)
                 .opacity(pulsing ? 0.45 : 1)
@@ -6013,7 +6013,7 @@ struct MarkdownText: View {
                 p.firstLineHeadIndent = 8
                 p.headIndent = 8
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                    .font: NSFont.monospacedSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .regular),
                     .foregroundColor: NSColor.systemPurple,
                     .backgroundColor: NSColor.systemPurple.withAlphaComponent(0.10),
                     .paragraphStyle: p,

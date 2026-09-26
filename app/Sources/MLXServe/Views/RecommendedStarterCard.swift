@@ -28,7 +28,7 @@ struct RecommendedStarterCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 16))
+                    .font(.system(.title3))
                     .foregroundColor(.accentColor)
                     .frame(width: 24, alignment: .center)
                 VStack(alignment: .leading, spacing: 2) {

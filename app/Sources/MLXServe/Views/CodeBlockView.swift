@@ -174,7 +174,8 @@ enum CodeBlockText {
 
 /// Layout constants for a code block.
 enum CodeBlockLayout {
-    static let fontSize: CGFloat = 12
+    /// The system's callout size, so code follows the text-size setting.
+    static var fontSize: CGFloat { NSFont.preferredFont(forTextStyle: .callout).pointSize }
     static let cornerRadius: CGFloat = 10
     static let lineSpacing: CGFloat = 2.5
 }
@@ -235,7 +236,7 @@ struct CodeBlockView: View {
     private var header: some View {
         HStack(spacing: 6) {
             Text(L10n.text(label))
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(.caption2).weight(.medium))
                 .foregroundStyle(.secondary)
             Spacer()
             Button {
@@ -251,9 +252,9 @@ struct CodeBlockView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(.caption2).weight(.medium))
                     Text(L10n.text(copied ? "Copied" : "Copy"))
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(.caption2).weight(.medium))
                 }
                 .foregroundStyle(copied ? Color.green : Color.secondary)
                 .padding(.horizontal, 6)

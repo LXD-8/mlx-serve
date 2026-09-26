@@ -15,7 +15,7 @@ struct ChatErrorCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(.title3).weight(.medium))
                 .foregroundStyle(.red)
                 .padding(.top, 1)
 
@@ -33,7 +33,7 @@ struct ChatErrorCard: View {
                     Button(action: onIncreaseContext) {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.up.forward.square")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(.subheadline).weight(.medium))
                             Text("Increase Context Size")
                                 .font(.callout.weight(.medium))
                         }

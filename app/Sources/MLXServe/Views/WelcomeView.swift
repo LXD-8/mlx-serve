@@ -118,7 +118,7 @@ struct WelcomeView: View {
             logoTile
             VStack(alignment: .leading, spacing: 2) {
                 Text("MLX-Serve")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(.title).weight(.semibold))
                 Text("Local AI on Apple Silicon")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -134,7 +134,7 @@ struct WelcomeView: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 11))
+                        .font(.system(.subheadline))
                         .foregroundStyle(.yellow)
                     Text("Star on GitHub")
                 }
@@ -255,7 +255,7 @@ struct WelcomeView: View {
     private func surfaceRow(_ surface: WelcomeSurface) -> some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: surface.icon)
-                .font(.system(size: 18))
+                .font(.system(.title2))
                 .foregroundColor(.accentColor)
                 .frame(width: 26, alignment: .center)
             VStack(alignment: .leading, spacing: 2) {
@@ -516,13 +516,13 @@ private struct WelcomeFeatureCard: View {
         Button(action: onTap) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: feature.icon)
-                    .font(.system(size: 17))
+                    .font(.system(.title2))
                     .foregroundColor(isSelected ? .accentColor : .secondary)
                     .frame(width: 24, alignment: .center)
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L10n.text(feature.title))
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(.headline))
                         .foregroundColor(.primary)
                     Text(L10n.text(feature.description))
                         .font(.caption)
@@ -627,7 +627,7 @@ private struct WelcomeModelRow: View {
             VStack(spacing: 2) {
                 ProgressView(value: state.progress).frame(width: 58)
                 Text(state.percentFormatted)
-                    .font(.system(size: 9).monospacedDigit())
+                    .font(.system(.caption2).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         } else {

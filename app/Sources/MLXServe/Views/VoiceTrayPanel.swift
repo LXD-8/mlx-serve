@@ -142,7 +142,7 @@ struct VoiceTrayPanel: View {
     private var agentPicker: some View {
         HStack(spacing: 6) {
             Image(systemName: activeAgent?.symbol ?? "person.crop.circle")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(.subheadline).weight(.medium))
                 .foregroundStyle(.secondary)
             Picker("", selection: Binding(get: { appState.defaultAgentId },
                                           set: { appState.defaultAgentId = $0 })) {
@@ -218,7 +218,7 @@ struct VoiceTrayPanel: View {
                 .foregroundStyle(.secondary)
             if !req.rawArguments.isEmpty {
                 Text(L10n.text(req.rawArguments))
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
                     .truncationMode(.tail)
@@ -248,7 +248,7 @@ struct VoiceTrayPanel: View {
                                help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: system).font(.system(size: 11, weight: .medium))
+                Image(systemName: system).font(.system(.subheadline).weight(.medium))
                 Text(L10n.text(label)).font(.caption2.weight(.medium))
             }
             .foregroundStyle(tint ?? .secondary)

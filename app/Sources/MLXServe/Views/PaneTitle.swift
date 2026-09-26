@@ -16,7 +16,7 @@ struct PaneTitleBar: View {
                 .foregroundStyle(.primary)
             Button(action: add) {
                 Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(.callout).weight(.semibold))
                     .foregroundStyle(.primary)
                     // A square target the glyph sits in the middle of, rather
                     // than the glyph's own bounds — a bare symbol is a few

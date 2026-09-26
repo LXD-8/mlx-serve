@@ -164,7 +164,7 @@ struct BenchmarkRungTable: View {
 
     private func header(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(.caption2).weight(.semibold))
             .tracking(0.5)
             .foregroundStyle(.tertiary)
     }
@@ -189,7 +189,7 @@ struct BenchmarkSettingsChips: View {
         HStack(spacing: 4) {
             ForEach(BenchmarkSettings.summaryChips(settings), id: \.self) { chip in
                 Text(chip)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(.caption2).weight(.medium))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(.quaternary.opacity(0.5), in: Capsule())

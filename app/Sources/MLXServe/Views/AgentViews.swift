@@ -103,14 +103,14 @@ struct PlanCardView: View {
                 .frame(width: 18, height: 18)
             if let result {
                 Image(systemName: result.status == .success ? "checkmark" : "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(.caption2).bold())
                     .foregroundStyle(.white)
             } else if currentStepIndex == index {
                 ProgressView()
                     .controlSize(.mini)
             } else {
                 Text("\(index + 1)")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(.caption2).weight(.semibold))
                     .foregroundStyle(.white)
             }
         }

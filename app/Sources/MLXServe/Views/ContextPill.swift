@@ -92,7 +92,7 @@ struct ContextWindowDetail: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "brain")
-                    .font(.system(size: 15))
+                    .font(.system(.title3))
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Context window")
@@ -114,11 +114,11 @@ struct ContextWindowDetail: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(L10n.text(stats.percentText))
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded).weight(.semibold))
                         .foregroundStyle(tint)
                     Spacer()
                     Text("\(ContextWindowStats.compact(stats.usedTokens)) / \(ContextWindowStats.compact(stats.contextLength))")
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
 
@@ -165,21 +165,21 @@ struct ContextWindowDetail: View {
     private func textRow(icon: String, label: String, value: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
             Text(L10n.text(label))
                 .font(.callout)
             Spacer()
             Text(value)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(.callout, design: .monospaced))
         }
     }
 
     private func row(icon: String, label: String, value: Int, emphasized: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
             Text(L10n.text(label))
@@ -187,7 +187,7 @@ struct ContextWindowDetail: View {
             Spacer()
             // Exact figures here — the pill rounds, this is where you check.
             Text(value.formatted(.number.grouping(.automatic)))
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(.callout, design: .monospaced))
                 .fontWeight(emphasized ? .semibold : .regular)
         }
     }

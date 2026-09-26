@@ -193,7 +193,7 @@ struct AgentListPane: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(.callout).weight(.semibold))
                     .frame(width: 18)
                 Text("Create New Agent")
                     .font(.subheadline)
@@ -379,7 +379,7 @@ private struct AgentListRow: View {
         Button(action: select) {
             HStack(spacing: 8) {
                 Image(systemName: agent.symbol)
-                    .font(.system(size: 12))
+                    .font(.system(.callout))
                     .frame(width: 18)
                     .foregroundStyle(selectable ? Color.accentColor : .secondary)
                 VStack(alignment: .leading, spacing: 1) {
@@ -419,7 +419,7 @@ private struct AgentListRow: View {
         if hovering || selected {
             Button(action: startChat) {
                 Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(.subheadline).weight(.medium))
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
@@ -654,7 +654,7 @@ private struct AgentEditor: View {
 
     private var symbolBadge: some View {
         Image(systemName: agent.symbol)
-            .font(.system(size: 19, weight: .medium))
+            .font(.system(.title2).weight(.medium))
             .foregroundStyle(Color.accentColor)
             .frame(width: AgentEditorMetrics.avatarSize, height: AgentEditorMetrics.avatarSize)
             .background(Circle().fill(Color.accentColor.opacity(0.16)))
@@ -666,7 +666,7 @@ private struct AgentEditor: View {
     private var symbolEditHint: some View {
         if !readOnly {
             Image(systemName: "pencil.circle.fill")
-                .font(.system(size: 14))
+                .font(.system(.body))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(Color.white, Color.accentColor)
         }

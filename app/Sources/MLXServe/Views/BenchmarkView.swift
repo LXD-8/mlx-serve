@@ -194,7 +194,7 @@ struct BenchmarkView: View {
     private var resultPlaceholder: some View {
         VStack(spacing: 10) {
             Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 32, weight: .light))
+                .font(.system(.largeTitle).weight(.light))
                 .foregroundStyle(.tertiary)
             Text("No result yet")
                 .font(.callout.weight(.medium))

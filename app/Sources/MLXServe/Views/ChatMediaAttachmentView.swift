@@ -112,7 +112,7 @@ private struct RevealInFinderButton: View {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         } label: {
             Image(systemName: "folder")
-                .font(.system(size: 11))
+                .font(.system(.subheadline))
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
         }

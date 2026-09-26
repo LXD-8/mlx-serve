@@ -54,11 +54,11 @@ struct QuickLauncherView: View {
     private var inputRow: some View {
         HStack(spacing: 12) {
             Image(systemName: "bolt.fill")
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(.title2).weight(.medium))
                 .foregroundStyle(Color.accentColor)
             TextField("Ask the local model anything…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 20, weight: .regular))
+                .font(.system(.title))
                 .focused($focused)
                 .onSubmit {
                     if controller.submit(query) { query = "" }

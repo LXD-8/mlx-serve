@@ -61,7 +61,7 @@ struct BundleDownloadBar: View {
             HStack(spacing: 8) {
                 ProgressView(value: a.state.progress).frame(maxWidth: .infinity)
                 Text("\(a.state.percentFormatted) \(a.state.speedFormatted)")
-                    .font(.system(size: 9).monospacedDigit()).foregroundStyle(.secondary)
+                    .font(.system(.caption2).monospacedDigit()).foregroundStyle(.secondary)
                 Button { downloads.cancelBundle(bundle) } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
@@ -72,7 +72,7 @@ struct BundleDownloadBar: View {
                 ? L10n.format("Downloading model %lld/%lld: ", Int64(a.index), Int64(a.count))
                 : L10n.text("Downloading: ")
             Text(label + (a.state.currentFile.isEmpty ? a.state.statusText : a.state.currentFile))
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+                .font(.system(.caption2)).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.middle)
         }
     }

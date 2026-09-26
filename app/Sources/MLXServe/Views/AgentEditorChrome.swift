@@ -187,7 +187,7 @@ struct AgentPillButton: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(.subheadline).weight(.semibold))
                 }
                 Text(L10n.text(title)).font(.callout)
             }

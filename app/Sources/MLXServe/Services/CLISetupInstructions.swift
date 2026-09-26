@@ -212,7 +212,7 @@ struct CLISetupInstructionsView: View {
             if let tab = selected {
                 ScrollView([.vertical, .horizontal]) {
                     Text(tab.command)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(.subheadline, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
