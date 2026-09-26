@@ -1072,3 +1072,131 @@ test('the light palette restates every variable the dark palette sets', () => {
   const missing = [...base].filter((v) => !light.has(v));
   assert.deepEqual(missing, [], 'a variable left out of the light block is a dark island');
 });
+
+// ── i18n.js (the console's language boot) ───────────────────────────────────
+// The boot is DOM code with one file-private table pair, so the stub below is
+// its whole environment: what the shell script used to grep for is asserted by
+// running it.
+const i18nSrc = readFileSync(join(here, '..', 'src', 'html', 'i18n.js'), 'utf8');
+
+function bootI18n({ languages = ['en-US'], stored = null, nodes = [] } = {}) {
+  const store = { value: stored };
+  const htmlAttrs = [];
+  const sandbox = {
+    navigator: { languages },
+    localStorage: { getItem: () => store.value, setItem: (_, v) => { store.value = v; } },
+  };
+  sandbox.document = {
+    readyState: 'complete',
+    documentElement: { setAttribute: (k, v) => htmlAttrs.push([k, v]) },
+    querySelectorAll: () => nodes,
+    addEventListener: () => {},
+  };
+  sandbox.window = {};
+  runInNewContext(i18nSrc, sandbox);
+  return { i18n: sandbox.window.mlxI18n, htmlAttrs, store };
+}
+
+// A key whose zh-Hans value carries two `%@`, read out of the shipped table so
+// the assertion cannot drift from it.
+const twoParam = (() => {
+  for (const m of i18nSrc.matchAll(/^\s*"((?:[^"\\]|\\.)*)":\s*"((?:[^"\\]|\\.)*)",?$/gm)) {
+    if ((m[2].match(/%@/g) || []).length === 2) return [m[1], m[2]];
+  }
+  throw new Error('the zh-Hans table must carry a two-parameter line');
+})();
+
+test('t() falls back to the key and substitutes %@ positionally', () => {
+  const { i18n } = bootI18n({ languages: ['zh-CN'] });
+  assert.equal(i18n.lang, 'zh-Hans');
+  assert.equal(i18n.t('New chat'), '新建聊天');
+  assert.equal(i18n.t('a key no table carries'), 'a key no table carries');
+  // The fallback is the TEMPLATE, not the answer: a param-carrying key with
+  // no entry used to return early and leave the literal `%@` on the page.
+  assert.equal(i18n.t('a key no table carries %@', ['x']), 'a key no table carries x');
+  const [key, value] = twoParam;
+  const filled = value.replace('%@', 'ONE').replace('%@', 'TWO');
+  assert.equal(i18n.t(key, ['ONE', 'TWO']), filled, `${key} takes its arguments in order`);
+});
+
+test('the browser decides the language when nothing is stored', () => {
+  assert.equal(bootI18n({ languages: ['zh-CN', 'en'] }).i18n.lang, 'zh-Hans');
+  assert.equal(bootI18n({ languages: ['en-GB'] }).i18n.lang, 'en');
+  assert.equal(bootI18n({ languages: ['fr-FR'] }).i18n.lang, 'en', 'an unsupported language falls back to English');
+  assert.deepEqual(bootI18n({ languages: ['zh-CN'] }).htmlAttrs.at(-1), ['lang', 'zh-Hans']);
+});
+
+test('a stored choice wins over the browser, and a bogus one is ignored', () => {
+  assert.equal(bootI18n({ stored: 'zh-Hans', languages: ['en-US'] }).i18n.lang, 'zh-Hans');
+  assert.equal(bootI18n({ stored: 'en', languages: ['zh-CN'] }).i18n.lang, 'en');
+  assert.equal(bootI18n({ stored: 'de', languages: ['en-US'] }).i18n.lang, 'en');
+  const t = bootI18n({ stored: 'en', languages: ['en-US'] });
+  t.i18n.setLang('zh-Hans');
+  assert.equal(t.store.value, 'zh-Hans', 'a switch is remembered');
+  assert.equal(t.i18n.lang, 'zh-Hans');
+});
+
+test('applyMarkup fills the text, title, aria-label and placeholder slots', () => {
+  const el = (attrs) => {
+    const own = { ...attrs };
+    return {
+      getAttribute: (k) => (k in own ? own[k] : null),
+      setAttribute: (k, v) => { own[k] = v; },
+      textContent: '',
+      innerHTML: '',
+      matches: () => false,
+      own,
+    };
+  };
+  const text = el({ 'data-i18n': 'New chat' });
+  const title = el({ 'data-i18n-title': 'Language' });
+  const aria = el({ 'data-i18n-aria-label': 'Language' });
+  const placeholder = el({ 'data-i18n-placeholder': 'New chat' });
+  const root = { querySelectorAll: () => [text, title, aria, placeholder] };
+  const { i18n } = bootI18n({ languages: ['zh-CN'], nodes: [] });
+  i18n.applyMarkup(root);
+  assert.equal(text.textContent, '新建聊天');
+  assert.equal(title.own.title, '语言');
+  assert.equal(aria.own['aria-label'], '语言');
+  assert.equal(placeholder.own.placeholder, '新建聊天');
+});
+
+// A marked key with no entry falls back to English, so a missed entry is a
+// string that silently stays untranslated in a Chinese console.
+test('every marked key in index.html has a zh-Hans entry', () => {
+  const i18nSrc = readFileSync(join(here, '..', 'src', 'html', 'i18n.js'), 'utf8');
+  const table = i18nSrc.match(/var ZH = \{([\s\S]*?)\n  \}/);
+  assert.ok(table, 'i18n.js must carry the zh-Hans table');
+  const keys = new Set([...table[1].matchAll(/^\s*"((?:[^"\\]|\\.)*)"\s*:/gm)].map((m) => m[1]));
+
+  const page = readFileSync(join(here, '..', 'src', 'html', 'index.html'), 'utf8');
+  const marked = [...page.matchAll(/data-i18n(?:-title|-aria-label|-placeholder)?="([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(marked.length > 10, `the markup scan found ${marked.length} marked keys`);
+
+  const missing = [...new Set(marked)].filter((k) => !keys.has(k));
+  assert.deepEqual(missing, [], `marked key(s) with no zh-Hans entry: ${missing.join(', ')}`);
+});
+
+// ── Type is relative, so the reader's browser size applies ────────────────
+// A `px` font size ignores the browser's own default font size AND the page
+// zoom, which is the one text-size control a reader of the console actually
+// has. `rem` follows the root size, so the same value renders at whatever the
+// reader chose. The app's own ladder is the same idea in point sizes
+// (`app/Sources/MLXServe/Support/AppType.swift`); this is the web half of the
+// same rule, and the scan is what stops a later stylesheet from quietly
+// putting px back.
+
+test('no console stylesheet states a font size in px', () => {
+  const files = ['app.css', 'metrics.js', 'index.html', 'app.js'];
+  const offenders = [];
+  for (const name of files) {
+    const text = readFileSync(join(here, '..', 'src', 'html', name), 'utf8');
+    for (const m of text.matchAll(/(?:^|[\s{;"'])font(?:-size)?\s*:\s*(\d+(?:\.\d+)?)px\b/g)) {
+      const line = text.slice(0, m.index).split('\n').length;
+      offenders.push(`${name}:${line}: ${m[0].trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `font sizes in px ignore the reader's own text size:\n  ${offenders.join('\n  ')}\n` +
+    'Use rem (px / 16): 13px is 0.8125rem.');
+});
