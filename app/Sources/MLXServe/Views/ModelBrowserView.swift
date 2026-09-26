@@ -546,7 +546,7 @@ private struct RecommendedModelTableRow: View {
                     }
                     .keyboardShortcut(.defaultAction)
                 } message: {
-                    Text("Delete \(pick.name)? This will remove all downloaded files.")
+                    Text(L10n.format("Delete %@? This will remove all downloaded files.", pick.name))
                 }
             }
         } else if let state, state.status == .downloading {
@@ -681,7 +681,7 @@ private struct DiscoverPane: View {
                             .font(.caption)
                             .padding(20)
                     } else if searchService.models.isEmpty {
-                        Text("No models found")
+                        Text(L10n.text("No models found"))
                             .foregroundStyle(.secondary)
                             .padding(40)
                     }
@@ -700,16 +700,16 @@ private struct DiscoverPane: View {
             Divider()
 
             HStack {
-                Text("Showing \(searchService.models.count) models")
+                Text(L10n.format("Showing %lld models", Int64(searchService.models.count)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if onDiskCount > 0 {
-                    Text("· \(onDiskCount) on disk")
+                    Text(L10n.format("· %lld on disk", Int64(onDiskCount)))
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
                 Spacer()
-                Text("System RAM: \(MemoryInfo.format(Int64(searchService.systemRAM)))")
+                Text(L10n.format("System RAM: %@", MemoryInfo.format(Int64(searchService.systemRAM))))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -813,12 +813,12 @@ private struct MyModelsPane: View {
             Divider()
 
             HStack {
-                Text("\(total) model\(total == 1 ? "" : "s") on disk")
+                Text(L10n.format(total == 1 ? "%lld model on disk" : "%lld models on disk", Int64(total)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 if !freeDiskSpace.isEmpty {
-                    Text("\(freeDiskSpace) available")
+                    Text(L10n.format("%@ available", freeDiskSpace))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -860,9 +860,9 @@ private struct DownloadsPane: View {
                     Image(systemName: "arrow.down.circle")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
-                    Text("No downloads in progress")
+                    Text(L10n.text("No downloads in progress"))
                         .foregroundStyle(.secondary)
-                    Text("Start one from Recommended or Discover.")
+                    Text(L10n.text("Start one from Recommended or Discover."))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -1012,7 +1012,7 @@ private struct MediaModelRow<Preset: MediaModelPreset>: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if bundle.components.count > 1 {
-                    Text("Includes \(bundle.components.count) models (e.g. a text encoder)")
+                    Text(L10n.format("Includes %lld models (e.g. a text encoder)", Int64(bundle.components.count)))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -1071,7 +1071,7 @@ private struct MediaModelRow<Preset: MediaModelPreset>: View {
                     }
                     .keyboardShortcut(.defaultAction)
                 } message: {
-                    Text("Delete \(preset.name)? This will remove the downloaded files.")
+                    Text(L10n.format("Delete %@? This will remove the downloaded files.", preset.name))
                 }
             }
         } else if let active, active.state.status == .downloading {
@@ -1228,7 +1228,7 @@ private struct ModelUseBadge: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(tint.opacity(0.12), in: Capsule())
-        .help(state.help)
+        .help(L10n.text(state.help))
     }
 }
 
@@ -1344,7 +1344,7 @@ private struct ModelBrowserRow: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                     if let reason = model.incompatibleReason {
-                        Text(reason)
+                        Text(L10n.text(reason))
                             .font(.system(size: 10))
                             .foregroundStyle(.red.opacity(0.8))
                             .lineLimit(1)
@@ -1605,7 +1605,7 @@ private struct ModelBrowserRow: View {
             }
             .keyboardShortcut(.defaultAction)
         } message: {
-            Text("Delete \(model.modelName)? This will remove all downloaded files.")
+            Text(L10n.format("Delete %@? This will remove all downloaded files.", model.modelName))
         }
     }
 }
@@ -1716,7 +1716,7 @@ private struct GgufQuantMenu: View {
             }
             .keyboardShortcut(.defaultAction)
         } message: { quant in
-            Text("Delete the \(quant.label) quant? Other quants of this model stay on disk.")
+            Text(L10n.format("Delete the %@ quant? Other quants of this model stay on disk.", quant.label))
         }
     }
 }
@@ -1816,7 +1816,7 @@ private struct MlxVariantMenu: View {
             }
             .keyboardShortcut(.defaultAction)
         } message: { v in
-            Text("Delete the \(v.label) build? Other quantizations of this model stay on disk.")
+            Text(L10n.format("Delete the %@ build? Other quantizations of this model stay on disk.", v.label))
         }
     }
 }
@@ -1896,7 +1896,7 @@ private struct LocalModelRow: View {
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.15), in: Capsule())
-                            .help(defect.explanation)
+                            .help(L10n.text(defect.explanation))
                     }
                     if model.kind == .drafter {
                         Text("Drafter")

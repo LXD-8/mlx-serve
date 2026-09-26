@@ -235,7 +235,7 @@ struct TrayAccessoryButton: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help(help)
+        .help(L10n.text(help))
     }
 }
 
@@ -264,7 +264,7 @@ struct TrayTile: View {
         // Enter/exit only — no continuous redraw, so the popover's hit-testing
         // stays alive (see the VoiceTrayPanel dot comment).
         .onHover { hovering = $0 }
-        .help(help)
+        .help(L10n.text(help))
     }
 }
 

@@ -91,7 +91,7 @@ struct BenchmarkView: View {
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $pane) {
                     ForEach(Pane.allCases) { pane in
-                        Text(pane.rawValue).tag(pane)
+                        Text(L10n.text(pane.rawValue)).tag(pane)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -313,7 +313,7 @@ struct BenchmarkView: View {
                     ProgressView(value: runner.progress.fraction)
                         .progressViewStyle(.linear)
                     HStack {
-                        Text(phaseDescription)
+                        Text(runner.phase.localizedText)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -668,20 +668,6 @@ struct BenchmarkView: View {
 
     // MARK: - Actions
 
-    private var phaseDescription: String {
-        switch runner.phase {
-        case .idle: return "Ready"
-        case .calibrating: return "Calibrating the token fit"
-        case .warmup(let rung): return "Warming up — \(rung)"
-        case .running(let rung, let run, let total): return "\(rung) context — run \(run) of \(total)"
-        case .drift(let run, let total): return "Drift check — run \(run) of \(total)"
-        case .stopping: return "Stopping after the current request…"
-        case .cancelled: return "Stopped"
-        case .done: return "Done"
-        case .failed(let message): return message
-        }
-    }
-
     private func refreshSettings() async {
         guard server.status == .running, let model = server.residentChatModel?.name else {
             liveSettings = [:]
@@ -713,7 +699,7 @@ struct BenchmarkView: View {
         runError = nil
         defer { loadingModel = false }
         if await loadPickedModel() == nil {
-            runError = "The model could not be loaded. Check the server log."
+            runError = L10n.text("The model could not be loaded. Check the server log.")
         }
         await refreshSettings()
     }
@@ -728,11 +714,12 @@ struct BenchmarkView: View {
         defer { isRunning = false }
 
         guard let resident = await loadPickedModel() else {
-            runError = "The model could not be loaded. Check the server log."
+            runError = L10n.text("The model could not be loaded. Check the server log.")
             return
         }
         if case .contextTooSmall(let have, let need) = LadderPreflight.decide(contextLength: resident.contextLength, ladder: ladder) {
-            runError = "This model is serving \(ContextSizeDisplay.formatTokens(have)) of context; the ladder needs \(ContextSizeDisplay.formatTokens(need)). Raise it in Settings ▸ Context."
+            runError = L10n.format("This model is serving %@ of context; the ladder needs %@. Raise it in Settings ▸ Context.",
+                                   ContextSizeDisplay.formatTokens(have), ContextSizeDisplay.formatTokens(need))
             return
         }
         let model = resident.name
@@ -742,7 +729,8 @@ struct BenchmarkView: View {
                                        note: BenchmarkResult.cleanNote(note), hardware: hardware)
         if case .failed(let message) = runner.phase { runError = message }
         if case .cancelled = runner.phase, !results.isEmpty {
-            runError = "Stopped after \(results.count) rung\(results.count == 1 ? "" : "s"); the drift check was skipped."
+            runError = L10n.format("Stopped after %lld rung%@; the drift check was skipped.",
+                                   Int64(results.count), results.count == 1 ? "" : "s")
         }
         lastResults = results
         if !results.isEmpty { history = BenchmarkStore.appendLocal(results) }

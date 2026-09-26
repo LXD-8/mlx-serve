@@ -47,8 +47,8 @@ final class AgentsWorkspaceModel: ObservableObject {
            WakeWord.collides(phrase, with: store.takenWakePhrases(excluding: d.id)) {
             d.wakePhrase = nil
             draft = d
-            message("That wake phrase is taken",
-                    "Another agent (or the app's own phrase) already answers to that name, so both would be unreachable. Pick a different one.")
+            message(L10n.text("That wake phrase is taken"),
+                    L10n.text("Another agent (or the app's own phrase) already answers to that name, so both would be unreachable. Pick a different one."))
         }
         store.update(d)
         // A live tab talking to this agent picks the change up on its next
@@ -259,7 +259,10 @@ struct AgentDetailPane: View {
                                 appState.startChat(withAgent: draft.id)
                             },
                             onDuplicate: { duplicate(draft) },
-                            onDelete: { model.alert = .init(title: "Delete “\(draft.name)”?",
+                            // The format runs at the producer: the title is
+                            // rendered verbatim in the alert, so building the
+                            // sentence first would leave the key unreachable.
+                            onDelete: { model.alert = .init(title: L10n.format("Delete “%@”?", draft.name),
                                                             kind: .confirmDelete(draft)) },
                             onNotify: { model.message($0, $0) })
             } else {
@@ -335,8 +338,8 @@ struct AgentDetailPane: View {
         guard var d = model.draft, !d.isBuiltIn else { return }
         let brief = d.brief.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !brief.isEmpty else {
-            model.message("Describe the agent first",
-                          "Write a line or two about the assistant you want, then let the model turn it into a prompt.")
+            model.message(L10n.text("Describe the agent first"),
+                          L10n.text("Write a line or two about the assistant you want, then let the model turn it into a prompt."))
             return
         }
         model.isWriting = true
@@ -347,8 +350,9 @@ struct AgentDetailPane: View {
                 result = try await AgentComposer.draftAgent(brief: brief, appState: appState)
             } catch {
                 result = AgentWriter.fallbackDraft(brief: brief)
-                model.message("Wrote it from your description",
-                              "\(error.localizedDescription)\n\nYour description was saved as the prompt — edit it directly, or try again once a model is running.")
+                model.message(L10n.text("Wrote it from your description"),
+                              L10n.format("%@\n\nYour description was saved as the prompt — edit it directly, or try again once a model is running.",
+                                          error.localizedDescription))
             }
             d.systemPrompt = result.systemPrompt
             if d.name.isEmpty || d.name == "New Agent" { d.name = result.name }
@@ -968,7 +972,7 @@ private struct AgentEditor: View {
                                   (path as NSString).lastPathComponent))
             }
         case .unavailable(let reason):
-            Label(reason, systemImage: "wifi.slash").foregroundStyle(.orange).font(.subheadline)
+            Label(L10n.text(reason), systemImage: "wifi.slash").foregroundStyle(.orange).font(.subheadline)
         case .noChange, .load, .lan:
             Text("Selecting this agent loads its model; “Current” leaves whatever is running alone.")
                 .font(.subheadline).foregroundStyle(.secondary)
@@ -1036,7 +1040,7 @@ private struct AgentEditor: View {
         // just quietly speak in the system voice — say so instead.
         if case .clone = agent.voice, !ttsDownloaded,
            let reason = VoiceCloneMenuModel.cloneUnavailableReason(ttsModelDownloaded: false) {
-            Label(reason, systemImage: "exclamationmark.triangle.fill")
+            Label(L10n.text(reason), systemImage: "exclamationmark.triangle.fill")
                 .font(.subheadline).foregroundStyle(.orange)
         }
         voiceActions
@@ -1056,7 +1060,7 @@ private struct AgentEditor: View {
                 .disabled(readOnly)
                 .help("Add a recording of a voice to clone. It's normalized and kept in ~/.mlx-serve/voice-clips so any agent can use it later.")
             if let error = previewer.error ?? clipError {
-                Text(error).font(.subheadline).foregroundStyle(.orange)
+                Text(L10n.text(error)).font(.subheadline).foregroundStyle(.orange)
             }
             Spacer(minLength: 0)
         }
@@ -1333,7 +1337,7 @@ private struct AgentVoiceMenu: View {
                 }
                 Menu("Your voices") {
                     if !globalClipPath.isEmpty {
-                        choice(globalClipLabel.isEmpty ? "Settings clip" : "\(globalClipLabel) (Settings)",
+                        choice(globalClipLabel.isEmpty ? "Settings clip" : L10n.format("%@ (Settings)", globalClipLabel),
                                isOn: voice == .clone(globalClipPath)) { voice = .clone(globalClipPath) }
                             .disabled(!cloneAvailable)
                     }

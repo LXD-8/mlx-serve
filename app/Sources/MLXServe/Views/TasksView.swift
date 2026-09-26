@@ -52,7 +52,7 @@ struct TaskListPane: View {
     private var taskListBody: some View {
         List(selection: $appState.selectedTaskId) {
                 if scheduler.tasks.isEmpty {
-                    Text("No tasks yet.\nTap + to create one.")
+                    Text(L10n.text("No tasks yet.\nTap + to create one."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -201,17 +201,17 @@ private struct TaskDetailView: View {
 
                 // Run history
                 HStack {
-                    Text("Runs").font(.headline)
+                    Text(L10n.text("Runs")).font(.headline)
                     Spacer()
                     if runs.contains(where: { $0.status.isTerminal && scheduler.activeRun?.id != $0.id }) {
-                        Button("Clear finished") { scheduler.clearFinishedRuns(taskId: task.id) }
+                        Button(L10n.text("Clear finished")) { scheduler.clearFinishedRuns(taskId: task.id) }
                             .buttonStyle(.link)
                             .font(.caption)
-                            .help("Delete all completed, failed and cancelled runs")
+                            .help(L10n.text("Delete all completed, failed and cancelled runs"))
                     }
                 }
                 if runs.isEmpty {
-                    Text("No runs yet. Tap Run now to try it.")
+                    Text(L10n.text("No runs yet. Tap Run now to try it."))
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     ForEach(runs) { run in
@@ -322,7 +322,7 @@ private struct ApprovalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Wants to run “\(pending.toolName)”", systemImage: "hand.raised.fill")
+            Label(L10n.format("Wants to run “%@”", pending.toolName), systemImage: "hand.raised.fill")
                 .font(.subheadline.weight(.semibold))
             Text(pending.reason).font(.caption).foregroundStyle(.secondary)
             if !pending.arguments.isEmpty {

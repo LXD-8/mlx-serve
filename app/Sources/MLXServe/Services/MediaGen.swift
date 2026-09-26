@@ -1593,10 +1593,12 @@ enum MusicOptions {
         "G minor": "restless",
     ]
 
-    /// "C major — plain, open", or just "C major" where we have no association.
+    /// "C major — open", or just "C major" where we have no association. The
+    /// picker renders this verbatim, so the mood is looked up here; the key name
+    /// itself is musical notation and stays Latin.
     static func keyLabel(_ key: String) -> String {
         guard let mood = keyMoods[key] else { return key }
-        return "\(key) — \(mood)"
+        return L10n.format("%@ — %@", key, L10n.text(mood))
     }
 
     /// (label, wire value). The engine takes the beats-per-bar number.

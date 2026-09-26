@@ -122,7 +122,7 @@ struct BenchmarkSessionSheet: View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
             ForEach(BenchmarkSettings.labels.filter { settings[$0.key] != nil }, id: \.key) { entry in
                 GridRow {
-                    Text(entry.label).foregroundStyle(.secondary)
+                    Text(L10n.text(entry.label)).foregroundStyle(.secondary)
                     Text(settings[entry.key] ?? "").monospacedDigit()
                 }
             }

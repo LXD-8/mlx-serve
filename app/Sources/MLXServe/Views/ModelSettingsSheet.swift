@@ -145,7 +145,7 @@ struct ModelSettingsSheet: View {
                     get: { override.kvQuant?.rawValue ?? "" },
                     set: { override.kvQuant = KvQuantChoice(rawValue: $0) })) {
                     Text("Default").tag("")
-                    ForEach(KvQuantChoice.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+                    ForEach(KvQuantChoice.allCases, id: \.rawValue) { Text(L10n.text($0.label)).tag($0.rawValue) }
                 }
                 }
                 if rows.mtp {
@@ -162,7 +162,7 @@ struct ModelSettingsSheet: View {
                     get: { override.mtpAcceptance?.rawValue ?? "" },
                     set: { override.mtpAcceptance = MtpAcceptanceChoice(rawValue: $0) })) {
                     Text("Default").tag("")
-                    ForEach(MtpAcceptanceChoice.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+                    ForEach(MtpAcceptanceChoice.allCases, id: \.rawValue) { Text(L10n.text($0.label)).tag($0.rawValue) }
                 }
                 }
                 if !isGguf {

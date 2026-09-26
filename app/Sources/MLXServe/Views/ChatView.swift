@@ -68,7 +68,7 @@ struct ToolApprovalSheet: View {
                     .font(.title2)
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Allow this tool call?")
+                    Text(L10n.text("Allow this tool call?"))
                         .font(.headline)
                     Text(L10n.text(headline))
                         .font(.subheadline)
@@ -78,7 +78,7 @@ struct ToolApprovalSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Tool: \(request.toolName)")
+                Text(L10n.format("Tool: %@", request.toolName))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 if argPairs.isEmpty && !request.rawArguments.isEmpty {
@@ -166,16 +166,19 @@ private struct AttachmentPreviewRow: View {
                 ForEach(Array(images.enumerated()), id: \.offset) { idx, pending in
                     imageChip(idx: idx, img: pending.image)
                 }
+                // Each `detail` is localized by its producer, not by `fileChip`:
+                // a format key has to be completed BEFORE the catalog lookup, or
+                // the lookup keys on the finished sentence and can never match.
                 ForEach(Array(pdfs.enumerated()), id: \.offset) { idx, pdf in
-                    fileChip(idx: idx, name: pdf.name, detail: "PDF · \(pdf.text.count) chars",
+                    fileChip(idx: idx, name: pdf.name, detail: L10n.format("PDF · %lld chars", pdf.text.count),
                              icon: "doc.text.fill", tint: .red) { pdfs.remove(at: idx) }
                 }
                 ForEach(Array(videos.enumerated()), id: \.offset) { idx, vid in
-                    fileChip(idx: idx, name: vid.name, detail: "Video · \(vid.frameCount) frames",
+                    fileChip(idx: idx, name: vid.name, detail: L10n.format("Video · %lld frames", vid.frameCount),
                              icon: "video.fill", tint: .orange) { videos.remove(at: idx) }
                 }
                 ForEach(Array(audio.enumerated()), id: \.offset) { idx, clip in
-                    fileChip(idx: idx, name: clip.name, detail: String(format: "Audio · %.1fs", clip.durationSeconds),
+                    fileChip(idx: idx, name: clip.name, detail: L10n.format("Audio · %.1fs", clip.durationSeconds),
                              icon: "waveform", tint: .purple) { audio.remove(at: idx) }
                 }
             }
@@ -222,7 +225,9 @@ private struct AttachmentPreviewRow: View {
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(L10n.text(detail))
+                    // Verbatim: every caller hands in text its producer already
+                    // localized, so a lookup here would re-key the sentence.
+                    Text(detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -741,8 +746,10 @@ enum SidebarDeleteConfirm {
     }
 
     /// The count is the thing to check before agreeing, so it is in the title.
+    /// The dialog renders this verbatim, so the format runs here.
     static func title(count: Int) -> String {
-        count == 1 ? "Delete this chat?" : "Delete \(count) chats?"
+        count == 1 ? L10n.text("Delete this chat?")
+                   : L10n.format("Delete %lld chats?", Int64(count))
     }
 }
 
@@ -1119,7 +1126,7 @@ struct ChatSidebar: View {
             .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { appState.pendingChatDeletion = nil }
         } message: { _ in
-            Text("This can't be undone.")
+            Text(L10n.text("This can't be undone."))
         }
         // ⌘1…⌘9. In the sidebar rather than the window's `.commands` because
         // they address THIS view's conversation list; hidden in a background so
@@ -1566,7 +1573,7 @@ struct ChatSidebar: View {
             // says how many; right-clicking outside one is a single delete.
             if appState.sidebarSelection.count > 1,
                appState.sidebarSelection.contains(session.id) {
-                Button("Delete \(appState.sidebarSelection.count) Chats", role: .destructive) {
+                Button(L10n.format("Delete %lld Chats", Int64(appState.sidebarSelection.count)), role: .destructive) {
                     requestDeleteChats(appState.sidebarSelection, keyboard: false)
                 }
             } else {
@@ -1669,7 +1676,7 @@ struct ChatSidebar: View {
                 .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { appState.pendingTerminalClose = nil }
         } message: {
-            Text("The session running inside the sandbox will be terminated. Files it wrote are kept.")
+            Text(L10n.text("The session running inside the sandbox will be terminated. Files it wrote are kept."))
         }
     }
 
@@ -2158,9 +2165,9 @@ struct ChatDetailView: View {
         if agentName == AppleFoundationChat.displayName {
             // Not an agent, and nothing to edit: the on-device model simply
             // does not have these.
-            Text("Not available on \(AppleFoundationChat.displayName)")
+            Text(L10n.format("Not available on %@", AppleFoundationChat.displayName))
         } else {
-            Text("Set by \(agentName)")
+            Text(L10n.format("Set by %@", agentName))
             Button("Edit Agent…") {
                 // ON that agent — the window otherwise opens on whoever sorts
                 // first, which is the wrong one every time you got here from a
@@ -4042,11 +4049,11 @@ struct GeneratingIndicator: View {
                 .frame(width: 20, height: 20)
 
             // Stats + whimsy
-            Text("GPU \(gpuPercent)%")
+            Text(L10n.format("GPU %lld%%", gpuPercent))
                 .foregroundStyle(gpuColor)
             Text("·")
                 .foregroundStyle(.tertiary)
-            Text("Mem \(memPercent)%")
+            Text(L10n.format("Mem %lld%%", memPercent))
                 .foregroundStyle(memColor)
             Text("·")
                 .foregroundStyle(.tertiary)
@@ -4101,7 +4108,9 @@ struct GeneratingIndicator: View {
         }
     }
 
-    private static let whimsies = [
+    /// The "Thinking…" line's word, looked up at the render site. Internal so
+    /// the coverage test can hold every one of them to a catalog entry.
+    static let whimsies = [
         "marinating", "boondoggling", "razzle-dazzling", "percolating",
         "simmering", "noodling", "cogitating", "ruminating",
         "brainstorming", "daydreaming", "scheming", "concocting",
@@ -4862,10 +4871,14 @@ struct MessageBubble: View {
             }
 
             if let tps = message.tokensPerSecond, tps > 0 {
-                StatPill(text: "\(Int(tps)) tok/sec",
+                // The format moves to the producer: `StatPill` renders its
+                // strings verbatim, so a lookup of an already-built `"42 tok/sec"`
+                // could never match a `%lld` key. Same shape as `ComposerTip`.
+                let speed = L10n.format("%lld tok/sec", Int(tps))
+                StatPill(text: speed,
                          expanded: message.completionTokens.map {
-                             "\(Int(tps)) tok/sec (\($0) tokens)"
-                         } ?? "\(Int(tps)) tok/sec")
+                             L10n.format("%lld tok/sec (%lld tokens)", Int(tps), $0)
+                         } ?? speed)
             }
 
             Spacer(minLength: 0)
@@ -4979,7 +4992,10 @@ private struct StatPill: View {
     }
 
     private func label(_ string: String) -> some View {
-        Text(L10n.text(string))
+        // Verbatim: both callers hand in finished text — timestamps already
+        // formatted by Foundation, and the tok/sec sentence localized by the
+        // producer — so a catalog lookup here would re-key the result.
+        Text(string)
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -5305,7 +5321,7 @@ private struct ToolCallRow: View {
         }
         if hidden > 0 {
             middot
-            Text("+\(hidden) other tool\(hidden == 1 ? "" : "s")")
+            Text(L10n.format(hidden == 1 ? "+%lld other tool" : "+%lld other tools", Int64(hidden)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -5439,8 +5455,8 @@ private struct StopProcessButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Stop background process \(handle)")
-        .accessibilityLabel("Stop background process \(handle)")
+        .help(L10n.format("Stop background process %@", handle))
+        .accessibilityLabel(L10n.format("Stop background process %@", handle))
     }
 }
 

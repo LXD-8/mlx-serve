@@ -419,7 +419,7 @@ struct StatusMenuView: View {
         }
         .tint(control.tint.color)
         .controlSize(.regular)
-        .help(control.help)
+        .help(L10n.text(control.help))
 
         if control.isProminent {
             button.buttonStyle(.borderedProminent)
@@ -887,7 +887,7 @@ struct ServerControlButtonPresentation: Equatable {
             systemImageName = nil
             showsProgress = true
             tint = .loading
-            help = "Loading model. Click to stop the server."
+            help = L10n.text("Loading model. Click to stop the server.")
             isProminent = true
             return
         }
@@ -897,23 +897,23 @@ struct ServerControlButtonPresentation: Equatable {
             systemImageName = nil
             showsProgress = true
             tint = .loading
-            help = loadsModel ? "Loading model. Click to stop." : "Starting the server. Click to stop."
+            help = L10n.text(loadsModel ? "Loading model. Click to stop." : "Starting the server. Click to stop.")
             isProminent = true
         case .running:
             title = "Stop Server"
             systemImageName = "stop.fill"
             showsProgress = false
             tint = .red
-            help = "Stop the running server."
+            help = L10n.text("Stop the running server.")
             isProminent = false
         case .stopped, .error:
             title = "Start Server"
             systemImageName = "play.fill"
             showsProgress = false
             tint = .accent
-            help = loadsModel
+            help = L10n.text(loadsModel
                 ? "Start the server and load the selected model."
-                : "Start the server with no model resident — it loads one on demand at your first message. Settings ▸ Server ▸ \"Preload the model when the server starts\" changes this."
+                : "Start the server with no model resident — it loads one on demand at your first message. Settings ▸ Server ▸ \"Preload the model when the server starts\" changes this.")
             isProminent = true
         }
     }

@@ -162,8 +162,10 @@ struct BenchmarkRungTable: View {
         .font(.callout)
     }
 
+    /// The caps are a render-time treatment: the catalog is keyed on the source
+    /// literal, so the lookup has to run BEFORE uppercasing.
     private func header(_ text: String) -> some View {
-        Text(text.uppercased())
+        Text(L10n.text(text).uppercased())
             .font(.system(size: 9, weight: .semibold))
             .tracking(0.5)
             .foregroundStyle(.tertiary)
@@ -188,7 +190,7 @@ struct BenchmarkSettingsChips: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(BenchmarkSettings.summaryChips(settings), id: \.self) { chip in
-                Text(chip)
+                Text(L10n.text(chip))
                     .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -216,14 +218,14 @@ struct BenchCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: icon)
+            Label(L10n.text(title), systemImage: icon)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             content
 
             if let footnote {
-                Text(footnote)
+                Text(L10n.text(footnote))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -253,9 +255,9 @@ struct BenchRow<Value: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(label)
+                Text(L10n.text(label))
                 if let detail {
-                    Text(detail)
+                    Text(L10n.text(detail))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
