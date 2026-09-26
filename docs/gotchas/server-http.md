@@ -2315,3 +2315,19 @@ Guards: `DiskTier: a restore wider than the fd limit closes each chunk as it goe
 `DiskTier: a failed restore drops the latch it raised and keeps a foreign one`, and
 `tests/test_prefix_cache_disk.sh` [7] (a restore under a lowered `ulimit -n`, plus a chunk
 made unreadable after boot).
+
+## Logprobs were null whenever `response_format` was set (#515)
+
+Defect: a `json_object` or `json_schema` request with `logprobs: true` returned `"logprobs": null`,
+streamed or not. The constrained answer was correct; only the entries were missing.
+
+Cause: `Generator.next` hands a constrained request to `nextConstrained`, and none of its arms
+(JSON body, reasoning, opener choice, forced recovery token) computed a logprob. The regular
+decode loop publishes through `pending_logprob` with a one-token delay; the constrained path
+samples and returns the same token in one call, so it never reached that code.
+
+Fix: `nextConstrained` keeps a handle to the position's logits, lets the arm pick or force the
+token, then computes that token's entry from the raw logits, before the grammar mask. The entries
+are the model's distribution, so the emitted token need not be rank 1 under a grammar.
+Guards: `constrained generation returns one logprob entry per token` (generate.zig, gated on
+`LOGPROBS_TEST_MODEL`) and `tests/test_logprobs.sh` [7].
