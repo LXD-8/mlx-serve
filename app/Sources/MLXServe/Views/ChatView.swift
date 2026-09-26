@@ -1820,9 +1820,13 @@ struct ChatSidebar: View {
                                   badge: Int = 0) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
-                .font(.app(.callout, weight: .medium))
+                .font(.app(.headline, weight: selected ? .semibold : .medium))
                 .frame(width: 16)
-            Text(L10n.text(title)).font(.app(.subheadline).weight(.medium))
+            // 14, not `.subheadline`(12): a sidebar row names a place the same
+            // way a settings row names a setting, and the two were a step apart.
+            // Selection shows in the text, not only in the row's background.
+            Text(L10n.text(title))
+                .font(.app(.headline, weight: selected ? .semibold : .medium))
             Spacer(minLength: 4)
             if badge > 0 {
                 Text("\(badge)")

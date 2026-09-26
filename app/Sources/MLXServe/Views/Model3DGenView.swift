@@ -152,7 +152,7 @@ struct Model3DGenView: View {
 
     private var photoSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Photo").font(.app(.subheadline).weight(.semibold))
+            Text("Photo").font(.app(.headline).weight(.semibold))
             if let url = photoURL {
                 // Same surface and same floor height as the empty well.
                 MediaDropWellFilled(isTargeted: isDropTargeted) {
@@ -198,7 +198,7 @@ struct Model3DGenView: View {
                 intSliderRow("Steps", value: $steps, range: 10...50)
                 sliderRow("Guidance", value: $guidance, range: 1...10, step: 0.5)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Mesh resolution").font(.app(.caption))
+                    Text("Mesh resolution").font(.app(.rowTitle))
                     Picker("", selection: $resolution) {
                         Text("128 (fast)").tag(128)
                         Text("256 (balanced)").tag(256)

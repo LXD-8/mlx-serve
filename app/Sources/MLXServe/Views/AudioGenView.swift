@@ -280,7 +280,7 @@ struct VoiceGenView: View {
     private var textSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Text to be generated").font(.app(.subheadline).weight(.semibold))
+                Text("Text to be generated").font(.app(.headline).weight(.semibold))
                 Spacer()
                 dictationButton
             }
@@ -416,7 +416,7 @@ struct VoiceGenView: View {
 
     private var referenceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Reference voice").font(.app(.subheadline).weight(.semibold))
+            Text("Reference voice").font(.app(.headline).weight(.semibold))
 
             if let url = refAudioURL {
                 MediaDropWellFilled(isTargeted: isDropTargeted) {
@@ -437,7 +437,7 @@ struct VoiceGenView: View {
                                 .buttonStyle(.borderless).foregroundStyle(.secondary).help("Clear reference")
                         }
                         // In the well with the clip it describes, not under it.
-                        Text("Transcript of reference (optional)").font(.app(.caption))
+                        Text("Transcript of reference (optional)").font(.app(.rowTitle))
                             .padding(.top, 6)
                         TextField("", text: $refText,
                                   prompt: Text("Optional — the reference audio alone clones the voice"))

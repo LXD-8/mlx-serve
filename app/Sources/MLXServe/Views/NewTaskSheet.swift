@@ -225,7 +225,7 @@ struct NewTaskSheet: View {
                         .font(.app(.caption).weight(.semibold))
                         .rotationEffect(.degrees(showOptions ? 90 : 0))
                         .foregroundStyle(.secondary)
-                    Text("Options").font(.app(.subheadline).weight(.semibold))
+                    Text("Options").font(.app(.headline).weight(.semibold))
                     if !showOptions, let summary = optionsSummary {
                         Text(L10n.text(summary))
                             .font(.app(.caption))

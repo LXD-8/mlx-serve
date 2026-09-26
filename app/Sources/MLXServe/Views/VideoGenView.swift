@@ -246,7 +246,7 @@ struct VideoGenView: View {
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Prompt").font(.app(.subheadline).weight(.semibold))
+                Text("Prompt").font(.app(.headline).weight(.semibold))
                 Spacer()
                 if let hint = promptHint { promptWarning(hint) }
                 templatesMenu
@@ -491,7 +491,7 @@ struct VideoGenView: View {
 
     private var qualitySection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Quality").font(.app(.subheadline).weight(.semibold))
+            Text("Quality").font(.app(.headline).weight(.semibold))
             // Measured, not `ViewThatFits`: see `qualityFitsSegments`. Five
             // segments degrade to a menu rather than shortening the tier names
             // this pane shares with every other Create pane.
@@ -862,7 +862,7 @@ struct VideoGenView: View {
     private var framesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Frames").font(.app(.subheadline).weight(.semibold))
+                Text("Frames").font(.app(.headline).weight(.semibold))
                 Spacer()
                 Text(L10n.format("%lld frames · ~%.1fs", Int64(numFrames), Double(numFrames) / Double(fps)))
                     .font(.app(.caption).monospacedDigit())
@@ -1124,7 +1124,7 @@ struct VideoGenView: View {
         if model.supportsReferences {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    Text("References").font(.app(.subheadline).weight(.semibold))
+                    Text("References").font(.app(.headline).weight(.semibold))
                     // A saved reference is gone and the tiles after it
                     // renumbered, so the prompt's `<Picture n>` may now name
                     // another picture. Cleared by the first edit to either.
@@ -1503,7 +1503,7 @@ struct VideoGenView: View {
         if !model.supportsAudioInput {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text("Sound").font(.app(.subheadline).weight(.semibold))
+                    Text("Sound").font(.app(.headline).weight(.semibold))
                     Text(L10n.text(model.generatesAudio ? "generated with the video" : "not supported"))
                         .font(.app(.caption))
                         .foregroundStyle(.secondary)
@@ -1535,7 +1535,7 @@ struct VideoGenView: View {
     private var audioInputSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("Speech & sound").font(.app(.subheadline).weight(.semibold))
+                Text("Speech & sound").font(.app(.headline).weight(.semibold))
                 Text("optional, audio-to-video")
                     .font(.app(.caption))
                     .foregroundStyle(.secondary)
@@ -1859,7 +1859,7 @@ struct VideoGenView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         // `fixedSize` for the reason `labelledSizeField` gives:
                         // a squeezed HStack gives first on the TEXT.
-                        Text("Mode").font(.app(.caption)).fixedSize()
+                        Text("Mode").font(.app(.rowTitle)).fixedSize()
                         // Through `modeLabel`, the same three words as the
                         // caption under the Quality switcher. Shows the
                         // EFFECTIVE mode and locks while a clip forces it.
@@ -1976,7 +1976,7 @@ struct VideoGenView: View {
     private var loraSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
-            Text("Style LoRAs").font(.app(.caption).weight(.semibold))
+            Text("Style LoRAs").font(.app(.headline).weight(.semibold))
             ForEach(Array(loras.enumerated()), id: \.element.id) { index, lora in
                 loraRow(index: index, lora: lora)
             }
@@ -2025,7 +2025,7 @@ struct VideoGenView: View {
                 .help("Remove this LoRA")
             }
             HStack(spacing: 8) {
-                Text("Scale").font(.app(.caption))
+                Text("Scale").font(.app(.rowTitle))
                 Slider(value: $loras[index].scale, in: 0...2, step: 0.05)
                 // Fixed width: a readout that sizes to its digits drags the
                 // slider's right edge every time the value crosses a width.

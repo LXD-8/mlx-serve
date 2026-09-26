@@ -39,7 +39,7 @@ struct MediaModelChooser<P: MediaModelSizing>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Model").font(.app(.subheadline).weight(.semibold))
+            Text("Model").font(.app(.headline).weight(.semibold))
 
             // ONE row: the model that will run. A stack of radio rows read as
             // a multi-select and grew with the catalogue; what the pane has to

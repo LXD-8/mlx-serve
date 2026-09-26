@@ -86,7 +86,12 @@ enum AppType {
         var step: Font.TextStyle {
             switch self {
             case .pageTitle:   return .largeTitle
-            case .sectionTitle: return .headline
+            // 16, not `.headline`(14): seventeen sheet and section headings in
+            // this app already sit at `.title3`, and a pane column's title in
+            // the toolbar cannot render SMALLER than the section headings
+            // underneath it. The role table follows the code, not the other
+            // way round.
+            case .sectionTitle: return .title3
             case .rowTitle:    return .body
             case .explainer:   return .callout
             case .value:       return .callout

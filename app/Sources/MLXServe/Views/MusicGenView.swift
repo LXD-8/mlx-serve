@@ -201,7 +201,7 @@ struct MusicGenView: View {
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Style prompt").font(.app(.subheadline).weight(.semibold))
+                Text("Style prompt").font(.app(.headline).weight(.semibold))
                 Spacer()
                 rewriteButton(.style, text: prompt)
                 styleExamplesMenu
@@ -220,7 +220,7 @@ struct MusicGenView: View {
     private var lyricsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Lyrics").font(.app(.subheadline).weight(.semibold))
+                Text("Lyrics").font(.app(.headline).weight(.semibold))
                 // The instrumental switch. Both engines can make a wordless
                 // track, but only ACE-Step ever said so (empty lyrics) and
                 // Music 3 refused outright — the server 400s an empty lyric
@@ -417,7 +417,7 @@ struct MusicGenView: View {
             if task == .cover {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("Cover strength").font(.app(.caption))
+                        Text("Cover strength").font(.app(.rowTitle))
                         Spacer()
                         Text(String(format: "%.2f", coverStrength)).font(.app(.caption).monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -430,7 +430,7 @@ struct MusicGenView: View {
                 .padding(.top, 6)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("Noise strength").font(.app(.caption))
+                        Text("Noise strength").font(.app(.rowTitle))
                         Spacer()
                         Text(String(format: "%.2f", coverNoiseStrength)).font(.app(.caption).monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -507,7 +507,7 @@ struct MusicGenView: View {
     private var referenceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Reference audio (optional)").font(.app(.subheadline).weight(.semibold))
+                Text("Reference audio (optional)").font(.app(.headline).weight(.semibold))
                 Spacer()
             }
             if let url = refAudioURL {
@@ -638,7 +638,7 @@ struct MusicGenView: View {
             // against the pane margin puts a number and its name at opposite
             // ends of a wide row with nothing between them to tie the two.
             HStack(spacing: 6) {
-                Text("Duration").font(.app(.subheadline).weight(.semibold))
+                Text("Duration").font(.app(.headline).weight(.semibold))
                 // Typed entry beside the slider: the slider steps by 5 and
                 // landing on 95 s by dragging is not a thing anyone should do.
                 NumberField(range: durationRangeInt,

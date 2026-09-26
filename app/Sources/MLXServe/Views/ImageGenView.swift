@@ -140,7 +140,7 @@ struct ImageGenView: View {
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Prompt").font(.app(.subheadline).weight(.semibold))
+                Text("Prompt").font(.app(.headline).weight(.semibold))
                 Spacer()
                 // Same idiom as the Video pane. For an EDIT model this menu is
                 // the feature discovery surface: the repertoire is prompts, so
@@ -171,7 +171,7 @@ struct ImageGenView: View {
     private var sourceImageSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Source image (optional)").font(.app(.subheadline).weight(.semibold))
+                Text("Source image (optional)").font(.app(.headline).weight(.semibold))
                 Spacer(minLength: 8)
                 // The mode switch belongs to the SECTION, not to the source
                 // row: sitting between the source and the references it split
@@ -231,7 +231,7 @@ struct ImageGenView: View {
                 } else if model.supportsImg2Img {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
-                            Text("Variation strength").font(.app(.caption))
+                            Text("Variation strength").font(.app(.rowTitle))
                             Spacer()
                             Text(String(format: "%.0f%%", strength * 100))
                                 .font(.app(.caption))
@@ -366,14 +366,14 @@ struct ImageGenView: View {
         // is the same silent-no-op the capability flags exist to kill.
         if model.stepsAreFixed {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Quality").font(.app(.subheadline).weight(.semibold))
+                Text("Quality").font(.app(.headline).weight(.semibold))
                 Text("Fixed at \(model.fixedSteps) steps — this model is distilled for a \(model.fixedSteps)-step schedule, so more steps cost time without adding detail.")
                     .font(.app(.caption))
                     .foregroundStyle(.secondary)
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Quality").font(.app(.subheadline).weight(.semibold))
+                Text("Quality").font(.app(.rowTitle).weight(.semibold))
                 Picker("", selection: $quality) {
                     ForEach(QualityPreset.allCases) { q in
                         Text(L10n.text(q.label)).tag(q)
@@ -398,7 +398,7 @@ struct ImageGenView: View {
 
     private var resolutionSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Resolution").font(.app(.subheadline).weight(.semibold))
+            Text("Resolution").font(.app(.rowTitle).weight(.semibold))
             Picker("", selection: $resolution) {
                 ForEach(model.resolutionOptions(editMode: isEditing)) { r in
                     Text(L10n.text(r.label)).font(.app(.body)).tag(r)
@@ -488,7 +488,7 @@ struct ImageGenView: View {
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Advanced (overrides Quality preset)").font(.app(.caption).weight(.semibold))
+                Text("Advanced (overrides Quality preset)").font(.app(.headline).weight(.semibold))
                 Spacer()
                 Button {
                     withAnimation { showAdvanced = false }
@@ -519,16 +519,16 @@ struct ImageGenView: View {
             // be pure decoration there and stays hidden.
             if model.supportsGuidance {
                 Divider()
-                Text("Classifier-free guidance").font(.app(.caption).weight(.semibold))
+                Text("Classifier-free guidance").font(.app(.rowTitle).weight(.semibold))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Guidance scale").font(.app(.caption))
+                    Text("Guidance scale").font(.app(.rowTitle))
                     Stepper(value: $guidanceScale, in: 1...20, step: 0.5) {
                         Text(String(format: "%.1f", guidanceScale))
                     }
                     .onChange(of: guidanceScale) { _, _ in guard !hydrating else { return }; persist() }
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Negative prompt").font(.app(.caption))
+                    Text("Negative prompt").font(.app(.rowTitle))
                     TextField("", text: $negativePrompt, prompt: Text("what to steer away from (optional)"))
                         .textFieldStyle(.roundedBorder)
                         .font(.app(.caption))
@@ -540,9 +540,9 @@ struct ImageGenView: View {
             // "Layer weights (0 numbers…)".
             if model.condWeightCount > 0 {
                 Divider()
-                Text("Conditioning rebalance").font(.app(.caption).weight(.semibold))
+                Text("Conditioning rebalance").font(.app(.rowTitle).weight(.semibold))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Global gain").font(.app(.caption))
+                    Text("Global gain").font(.app(.rowTitle))
                     Stepper(value: $condGain, in: 0...4, step: 0.1) {
                         Text(String(format: "%.1f", condGain))
                     }
@@ -571,7 +571,7 @@ struct ImageGenView: View {
             if model.supportsLoRA {
             Divider()
             HStack {
-                Text("Style LoRAs").font(.app(.caption).weight(.semibold))
+                Text("Style LoRAs").font(.app(.headline).weight(.semibold))
                 Spacer()
                 Button {
                     chooseLora()
