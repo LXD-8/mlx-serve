@@ -183,14 +183,14 @@ private struct EmptyStateChipLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: item.systemImage)
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(.system(size: AppTypeScale.body, weight: .semibold))
                 .foregroundStyle(item.tint)
             Text(L10n.text(item.title))
-                .font(.system(size: 12.5, weight: .medium))
+                .font(.system(size: AppTypeScale.body, weight: .medium))
                 .foregroundStyle(.primary)
             if showsChevron {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: AppTypeScale.body, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
         }

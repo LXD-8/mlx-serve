@@ -74,7 +74,7 @@ struct ModelPaletteSheet: View {
                 .foregroundStyle(.secondary)
             TextField("Search models…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 17))
+                .font(.system(size: AppTypeScale.title))
                 .focused($searchFocused)
                 .onSubmit { pickSelected() }
                 .onKeyPress(.upArrow) { moveSelection(-1) }
@@ -96,7 +96,7 @@ struct ModelPaletteSheet: View {
                             }
                         } header: {
                             Text(L10n.text(section))
-                                .font(.caption.weight(.semibold))
+                                .font(.system(size: AppTypeScale.body, weight: .semibold))
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 16)
@@ -122,16 +122,16 @@ struct ModelPaletteSheet: View {
                 // highlight says which one Return would load. Two different
                 // facts, so they are two different marks.
                 Image(systemName: row.tag == currentTag ? "checkmark" : "cpu")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: AppTypeScale.body, weight: .medium))
                     .foregroundStyle(row.tag == currentTag ? Color.accentColor : .secondary)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(L10n.text(row.title))
-                        .font(.callout.weight(.medium))
+                        .font(.system(size: AppTypeScale.body, weight: .medium))
                         .lineLimit(1)
                     if !row.detail.isEmpty {
                         Text(L10n.text(row.detail))
-                            .font(.caption)
+                            .font(.system(size: AppTypeScale.body))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -167,7 +167,7 @@ struct ModelPaletteSheet: View {
     private var footer: some View {
         HStack(spacing: 12) {
             Text("↑↓ move · ↩ switch · esc close")
-                .font(.caption2)
+                .font(.system(size: AppTypeScale.body))
                 .foregroundStyle(.tertiary)
             Spacer()
             Button("Manage Models…") {
@@ -175,7 +175,7 @@ struct ModelPaletteSheet: View {
                 appState.showModels()
             }
             .buttonStyle(.plain)
-            .font(.caption)
+            .font(.system(size: AppTypeScale.body))
             .foregroundStyle(Color.accentColor)
         }
         .padding(.horizontal, 16)

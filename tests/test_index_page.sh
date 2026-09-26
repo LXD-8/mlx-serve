@@ -157,8 +157,8 @@ else
     check "headless boot" 0
 fi
 
-# ── 3. --metrics puts the live panel in the header ──────────────────────────
-echo "[3/3] --metrics panel mount"
+# ── 3. --metrics puts the live panel in the header, and the served type floor ─
+echo "[3/3] --metrics panel mount + served type floor"
 if boot --metrics; then
     STATUS=$(curl -s -o "$BODY" -w '%{http_code}' "http://127.0.0.1:$PORT/")
     check "page still 200 with --metrics (got $STATUS)" \
@@ -167,6 +167,17 @@ if boot --metrics; then
         "$(grep -q 'id=mlx-metrics' "$BODY" && echo 1 || echo 0)"
     check "panel markup injected (m-status tile)" \
         "$(grep -q 'm-status' "$BODY" && echo 1 || echo 0)"
+
+    # The served bytes hold the same 12px even ladder the node test pins at the source.
+    SIZES=$(grep -oE 'font-size: ?[0-9.]+px' "$BODY" | grep -oE '[0-9.]+')
+    check "the page carries the console stylesheets ($(echo "$SIZES" | wc -l | tr -d ' ') sizes)" \
+        "$([ "$(echo "$SIZES" | wc -l | tr -d ' ')" -gt 15 ] && echo 1 || echo 0)"
+    SMALL=$(echo "$SIZES" | awk '$1 < 12' | tr '\n' ' ')
+    check "no console label renders under 12px (found:${SMALL:-none})" \
+        "$([ -z "$SMALL" ] && echo 1 || echo 0)"
+    ODD=$(echo "$SIZES" | awk '$1 != int($1) || int($1) % 2 != 0' | tr '\n' ' ')
+    check "every console size is an even step (found:${ODD:-none})" \
+        "$([ -z "$ODD" ] && echo 1 || echo 0)"
     stop
 else
     check "boot with --metrics" 0

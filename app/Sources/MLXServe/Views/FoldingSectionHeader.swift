@@ -19,7 +19,7 @@ struct FoldingSectionHeader: View {
             }
             // A section heading like the others: a disclosure is still a
             // section, and it sits in their column.
-            .font(.subheadline.weight(.semibold))
+            .font(.system(size: AppTypeScale.body, weight: .semibold))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -1176,3 +1176,27 @@ test('every marked key in index.html has a zh-Hans entry', () => {
   const missing = [...new Set(marked)].filter((k) => !keys.has(k));
   assert.deepEqual(missing, [], `marked key(s) with no zh-Hans entry: ${missing.join(', ')}`);
 });
+
+// ── The console's type ladder ───────────────────────────────────────────────
+// The bar: every textual size is an even step two points apart, nothing under
+// 12px, and no em/% size to compound under it.
+
+test('every console size sits on the even 12px ladder', () => {
+  const files = ['app.css', 'metrics.js', 'index.html']
+    .map(f => readFileSync(join(here, '..', 'src', 'html', f), 'utf8'));
+  const values = [];
+  for (const text of files) {
+    for (const m of text.matchAll(/\bfont(?:-size)?:\s*([^;}{]+)/g)) values.push(m[1]);
+  }
+  assert.ok(values.length > 15, `the font scan found ${values.length} declarations`);
+
+  for (const value of values) {
+    for (const [, n, unit] of value.matchAll(/([0-9.]+)(px|em|rem|%)/g)) {
+      assert.equal(unit, 'px',
+        `"${n}${unit}" in "${value.trim()}": an em/% compounds with the parent and can drop under the floor — state an explicit px step`);
+      assert.ok(parseFloat(n) >= 12, `"${n}px" in "${value.trim()}" is under the 12px floor`);
+      assert.equal(parseFloat(n) % 2, 0, `"${n}px" in "${value.trim()}" is not an even step`);
+      assert.equal(parseFloat(n) % 1, 0, `"${n}px" in "${value.trim()}" is not a whole step`);
+    }
+  }
+});

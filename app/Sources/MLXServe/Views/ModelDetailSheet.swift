@@ -18,10 +18,10 @@ struct ModelDetailSheet: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(request.title)
-                        .font(.title3.weight(.semibold))
+                        .font(.system(size: AppTypeScale.title, weight: .semibold))
                         .lineLimit(1)
                     Text(L10n.text(request.repoId))
-                        .font(.caption)
+                        .font(.system(size: AppTypeScale.body))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -53,7 +53,7 @@ struct ModelDetailSheet: View {
         case .failed(let reason):
             VStack(spacing: 8) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(.largeTitle)
+                    .font(.system(size: AppTypeScale.display))
                     .foregroundStyle(.secondary)
                 Text(reason)
                     .foregroundStyle(.secondary)

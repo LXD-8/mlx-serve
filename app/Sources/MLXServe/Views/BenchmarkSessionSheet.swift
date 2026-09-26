@@ -80,7 +80,7 @@ struct BenchmarkSessionSheet: View {
                 Label("Shared", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.octagon.fill")
-                    .font(.caption).foregroundStyle(.red)
+                    .font(.system(size: AppTypeScale.body)).foregroundStyle(.red)
                 Button("Try Again") { Task { await share(session) } }
                     .controlSize(.small)
             }
@@ -98,7 +98,7 @@ struct BenchmarkSessionSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(modelId).font(.title3.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+            Text(modelId).font(.system(size: AppTypeScale.title, weight: .semibold)).lineLimit(1).truncationMode(.middle)
             HStack(spacing: 8) {
                 Text(hardware.displayName)
                 Text("·")
@@ -109,11 +109,11 @@ struct BenchmarkSessionSheet: View {
                     Text("\(f.sessionCount) session\(f.sessionCount == 1 ? "" : "s")")
                 }
             }
-            .font(.callout)
+            .font(.system(size: AppTypeScale.body))
             .foregroundStyle(.secondary)
             BenchmarkSettingsChips(settings: settings)
             if case .session(let s) = source, let note = s.note {
-                Text(note).font(.callout).foregroundStyle(.secondary)
+                Text(note).font(.system(size: AppTypeScale.body)).foregroundStyle(.secondary)
             }
         }
     }
@@ -130,7 +130,7 @@ struct BenchmarkSessionSheet: View {
                 Text("Not recorded (run before settings capture).").foregroundStyle(.tertiary)
             }
         }
-        .font(.callout)
+        .font(.system(size: AppTypeScale.body))
     }
 
     private var systemGrid: some View {
@@ -150,7 +150,7 @@ struct BenchmarkSessionSheet: View {
                 }
             }
         }
-        .font(.callout)
+        .font(.system(size: AppTypeScale.body))
     }
 
     private func driftColor(_ percent: Double?) -> Color {

@@ -102,6 +102,36 @@ enum AppAppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// The app's type ladder is macOS's, with the odd steps made even: Apple's
+/// semantic sizes are 10, 11, 12, 13, 15, 17, 22 and 26, so 11, 13, 15 and 17
+/// each move up one point and the rest stay. Every step is therefore even and
+/// every step is a size the platform actually uses.
+///
+/// `AppTypeScale` is the only place a size is stated. A semantic style
+/// (`.caption`, `.body`, `.headline` …) is not an option: it would put the odd
+/// values back, which is the second ladder this replaced.
+enum AppTypeScale {
+    /// The floor: `.caption`/`.caption2`/`.footnote` and `labelFontSize` — 10.
+    static let floor: CGFloat = 10
+    /// Counters and badges.
+    static let aux: CGFloat = 10
+    /// Small print: `.subheadline` (11 + 1) and `.callout` (12).
+    static let small: CGFloat = 12
+    /// The default: `.body`/`.headline` (13 + 1) — rows, settings copy, chat,
+    /// the sidebar, buttons.
+    static let body: CGFloat = 14
+    /// Titles: `.title3` (15 + 1) — row, card and pane titles.
+    static let title: CGFloat = 16
+    /// Headings: `.title2` (17 + 1) — sheets, panes, settings sections.
+    static let heading: CGFloat = 18
+    /// Page titles: `.title1` — 22.
+    static let page: CGFloat = 22
+    /// Hero numbers, greetings, empty-state marks: `.largeTitle` — 26.
+    static let display: CGFloat = 26
+    /// Illustration glyphs, not type.
+    static let art: CGFloat = 64
+}
+
 enum ChatTextSize: String, CaseIterable, Identifiable {
     case small, medium, large, xlarge
     var id: String { rawValue }
@@ -113,26 +143,24 @@ enum ChatTextSize: String, CaseIterable, Identifiable {
         case .xlarge: return "Extra Large"
         }
     }
-    /// Prose size (`ChatMetrics.transcriptFontSize`). `.medium` is the size
-    /// this shipped with before the setting existed — changing it moves
-    /// everyone, changing the others doesn't.
+    /// Prose size (`ChatMetrics.transcriptFontSize`) on the ladder: 12 / 14 /
+    /// 16 / 22. `.medium` is the rung the app ships with.
     var proseSize: CGFloat {
         switch self {
-        case .small: return 12
-        case .medium: return 14
-        case .large: return 16
-        case .xlarge: return 19
+        case .small: return AppTypeScale.small
+        case .medium: return AppTypeScale.body
+        case .large: return AppTypeScale.title
+        case .xlarge: return AppTypeScale.page
         }
     }
-    /// Fenced/inline code size (`ChatMetrics.transcriptCodeFontSize`) — kept
-    /// 1–2pt under prose at every step (mono glyphs run wide, so code at
-    /// prose size reads larger than the sentence around it).
+    /// Fenced/inline code size (`ChatMetrics.transcriptCodeFontSize`) — one
+    /// rung under prose, since mono glyphs run wide, and never under the floor.
     var codeSize: CGFloat {
         switch self {
-        case .small: return 11
-        case .medium: return 13
-        case .large: return 15
-        case .xlarge: return 17
+        case .small: return AppTypeScale.aux
+        case .medium: return AppTypeScale.small
+        case .large: return AppTypeScale.body
+        case .xlarge: return AppTypeScale.heading
         }
     }
 }

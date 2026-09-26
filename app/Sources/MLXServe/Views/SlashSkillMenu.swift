@@ -14,9 +14,9 @@ struct SlashSkillMenu: View {
                 Button { onPick(skill) } label: {
                     HStack(spacing: 8) {
                         Text("/\(skill.name)")
-                            .font(.callout.weight(.medium))
+                            .font(.system(size: AppTypeScale.body, weight: .medium))
                         Text(L10n.text(skill.description))
-                            .font(.caption)
+                            .font(.system(size: AppTypeScale.body))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer(minLength: 0)

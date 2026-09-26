@@ -209,14 +209,14 @@ struct ComposerTipCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(tip.title)
-                .font(.caption.weight(.semibold))
+                .font(.system(size: AppTypeScale.body, weight: .semibold))
             Text(tip.body)
-                .font(.caption)
+                .font(.system(size: AppTypeScale.body))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let detail = tip.detail {
                 Text(detail)
-                    .font(.caption2.monospaced())
+                    .font(.system(size: AppTypeScale.body).monospaced())
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)

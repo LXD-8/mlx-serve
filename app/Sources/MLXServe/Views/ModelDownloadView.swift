@@ -31,9 +31,9 @@ struct ModelDownloadRow: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(L10n.text(option.displayName))
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: AppTypeScale.body, weight: .medium))
                     Text(L10n.text(option.sizeEstimate))
-                        .font(.caption2)
+                        .font(.system(size: AppTypeScale.body))
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
@@ -41,14 +41,14 @@ struct ModelDownloadRow: View {
                 if isReady {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                        .font(.caption)
+                        .font(.system(size: AppTypeScale.body))
                 } else if let state, state.status == .downloading {
                     HStack(spacing: 6) {
                         VStack(alignment: .trailing, spacing: 1) {
                             ProgressView(value: state.progress)
                                 .frame(width: 60)
                             Text("\(state.percentFormatted) \(state.speedFormatted)")
-                                .font(.system(size: 8).monospacedDigit())
+                                .font(.system(size: AppTypeScale.body).monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                         Button {
@@ -56,7 +56,7 @@ struct ModelDownloadRow: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
-                                .font(.caption)
+                                .font(.system(size: AppTypeScale.body))
                         }
                         .buttonStyle(.plain)
                         .help("Cancel download")
@@ -64,18 +64,18 @@ struct ModelDownloadRow: View {
                 } else if let state, state.status == .completed {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                        .font(.caption)
+                        .font(.system(size: AppTypeScale.body))
                 } else if let state, state.status == .failed {
                     Button(L10n.text(downloads.hasPartialDownload(option.repoId) ? "Resume" : "Retry")) {
                         startDownload()
                     }
-                    .font(.caption)
+                    .font(.system(size: AppTypeScale.body))
                     .controlSize(.mini)
                 } else {
                     Button(L10n.text(downloads.hasPartialDownload(option.repoId) ? "Resume" : "Download")) {
                         startDownload()
                     }
-                    .font(.caption)
+                    .font(.system(size: AppTypeScale.body))
                     .controlSize(.mini)
                 }
             }
@@ -83,14 +83,14 @@ struct ModelDownloadRow: View {
             // Status text for active downloads
             if let state, state.status == .downloading, !state.statusText.isEmpty {
                 Text("[\(state.fileIndex)/\(state.fileCount)] \(state.statusText)")
-                    .font(.system(size: 9))
+                    .font(.system(size: AppTypeScale.body))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             if let state, state.status == .failed, let error = state.error {
                 Text(error)
-                    .font(.system(size: 9))
+                    .font(.system(size: AppTypeScale.body))
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }

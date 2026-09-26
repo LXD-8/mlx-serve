@@ -13,13 +13,11 @@ final class TranscriptTypographyTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    /// The default (Settings ▸ Interface ▸ Text Size = Default) reads at
-    /// 14pt — bumped down from the original 16pt (2026-08-31, felt too large
-    /// at normal reading distance); the size is a user setting now
-    /// (`ChatTextSize`), and `.medium` is what nobody who never opens that
-    /// picker gets.
-    func testTheTranscriptReadsAtFourteenPointsByDefault() {
-        XCTAssertEqual(ChatTextSize.medium.proseSize, 14)
+    /// The default (Settings ▸ Interface ▸ Text Size = Default) reads at the
+    /// ladder's body rung; the size is a user setting now (`ChatTextSize`),
+    /// and `.medium` is what nobody who never opens that picker gets.
+    func testTheTranscriptReadsAtTheBodyRungByDefault() {
+        XCTAssertEqual(ChatTextSize.medium.proseSize, AppTypeScale.body)
         XCTAssertEqual(ChatMetrics.transcriptFontSize, ChatTextSize.medium.proseSize)
     }
 

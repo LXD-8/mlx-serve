@@ -48,16 +48,16 @@ struct SteeringNoteRow: View {
                     Text("About to send…")
                         .fontWeight(.bold)
                 }
-                .font(.caption2)
+                .font(.system(size: AppTypeScale.body))
                 .opacity(0.7)
                 let preview = Self.preview(note)
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(preview.text)
-                            .font(.body)
+                            .font(.system(size: AppTypeScale.body))
                         if preview.omitted > 0 {
                             Text(L10n.format("… %lld more characters", preview.omitted))
-                                .font(.caption2)
+                                .font(.system(size: AppTypeScale.body))
                                 .opacity(0.7)
                         }
                     }
