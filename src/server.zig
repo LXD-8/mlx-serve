@@ -7199,6 +7199,8 @@ const PropsSettings = struct {
     max_concurrent: u32,
     prefix_cache_mem_bytes: u64,
     prefix_cache_disk_bytes: u64,
+    /// `--prefill-decode-share`: decode's target wall-time fraction during another slot's prefill.
+    prefill_decode_share: f32 = 0,
 };
 
 const PropsEngine = enum { mlx, llama, ds4 };
@@ -7216,6 +7218,7 @@ fn embeddedEngineSettings(st: PropsSettings, engine: PropsEngine, engine_mtp: bo
     out.mtp_adaptive = false;
     out.drafter = "none";
     out.pld = PldDefaults.off;
+    out.prefill_decode_share = 0;
     return out;
 }
 
@@ -7245,6 +7248,8 @@ fn mlxPropsSettings(lm: *LoadedModel) PropsSettings {
         .max_concurrent = max_concurrent,
         .prefix_cache_mem_bytes = prefix_cache_mem_bytes,
         .prefix_cache_disk_bytes = prefix_cache_disk_bytes,
+        // Diffusion prefill returns before the interleave hook: nothing to share.
+        .prefill_decode_share = if (config.isDiffusion()) 0 else scheduler_mod.prefillDecodeShare(),
     };
 }
 
@@ -7256,7 +7261,7 @@ fn settingsPropsJson(allocator: std.mem.Allocator, st: PropsSettings) ![]u8 {
         .typical => |t| try std.fmt.bufPrint(&param_buf, "{d}", .{t.delta}),
         .tokenv3 => |a| try std.fmt.bufPrint(&param_buf, "{d}", .{a}),
     };
-    return std.fmt.allocPrint(allocator, ",\"settings\":{{\"version\":\"{s}\",\"engine\":\"{s}\",\"kv_quant\":\"{s}\",\"kv_attn_mode\":\"{s}\",\"decode_attn_quant\":{},\"prefill_chunk\":{d},\"mtp\":{{\"loaded\":{},\"default_on\":{},\"acceptance\":\"{s}\",\"acceptance_param\":{s},\"depth\":{d},\"adaptive\":{},\"max_ctx\":{d}}},\"drafter\":\"{s}\",\"pld\":{{\"default_on\":{},\"draft_len\":{d},\"key_len\":{d}}},\"max_concurrent\":{d},\"prefix_cache\":{{\"mem_bytes\":{d},\"disk_bytes\":{d}}}}}", .{
+    return std.fmt.allocPrint(allocator, ",\"settings\":{{\"version\":\"{s}\",\"engine\":\"{s}\",\"kv_quant\":\"{s}\",\"kv_attn_mode\":\"{s}\",\"decode_attn_quant\":{},\"prefill_chunk\":{d},\"mtp\":{{\"loaded\":{},\"default_on\":{},\"acceptance\":\"{s}\",\"acceptance_param\":{s},\"depth\":{d},\"adaptive\":{},\"max_ctx\":{d}}},\"drafter\":\"{s}\",\"pld\":{{\"default_on\":{},\"draft_len\":{d},\"key_len\":{d}}},\"max_concurrent\":{d},\"prefill_decode_share\":{d:.2},\"prefix_cache\":{{\"mem_bytes\":{d},\"disk_bytes\":{d}}}}}", .{
         build_options.version,                      st.engine,
         st.kv_quant,                                @tagName(st.kv_attn_mode),
         st.decode_attn_quant,                       st.prefill_chunk,
@@ -7266,7 +7271,8 @@ fn settingsPropsJson(allocator: std.mem.Allocator, st: PropsSettings) ![]u8 {
         st.max_mtp_ctx,                             st.drafter,
         st.pld.enable,                              st.pld.draft_len,
         st.pld.key_len,                             st.max_concurrent,
-        st.prefix_cache_mem_bytes,                  st.prefix_cache_disk_bytes,
+        st.prefill_decode_share,                    st.prefix_cache_mem_bytes,
+        st.prefix_cache_disk_bytes,
     });
 }
 
@@ -20063,8 +20069,17 @@ test "settingsPropsJson: /props names the effective serving settings a benchmark
     try testing.expect(ep.value.object.get("mtp").?.object.get("acceptance_param").? == .null);
 }
 
+test "settingsPropsJson: /props reports the prefill decode share" {
+    const frag = try settingsPropsJson(testing.allocator, .{ .engine = "mlx", .kv_quant = "off", .kv_attn_mode = .auto, .decode_attn_quant = false, .prefill_chunk = 8192, .mtp_loaded = false, .mtp_default_on = false, .mtp_acceptance = .exact, .mtp_depth = 0, .mtp_adaptive = false, .max_mtp_ctx = 0, .drafter = "none", .pld = PldDefaults.off, .max_concurrent = 8, .prefix_cache_mem_bytes = 0, .prefix_cache_disk_bytes = 0, .prefill_decode_share = 0.5 });
+    defer testing.allocator.free(frag);
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, frag[",\"settings\":".len..], .{});
+    defer parsed.deinit();
+    const v = parsed.value.object.get("prefill_decode_share") orelse return error.MissingShare;
+    try testing.expectApproxEqAbs(@as(f64, 0.5), v.float, 1e-6);
+}
+
 test "embeddedEngineSettings: an engine-backed model reports only the levers its engine runs" {
-    const base: PropsSettings = .{ .engine = "mlx", .kv_quant = "8", .kv_attn_mode = .auto, .decode_attn_quant = true, .prefill_chunk = 8192, .mtp_loaded = false, .mtp_default_on = false, .mtp_acceptance = .exact, .mtp_depth = 0, .mtp_adaptive = true, .max_mtp_ctx = 0, .drafter = "assistant", .pld = .{ .enable = true, .draft_len = 5, .key_len = 3 }, .max_concurrent = 4, .prefix_cache_mem_bytes = 2048, .prefix_cache_disk_bytes = 0 };
+    const base: PropsSettings = .{ .engine = "mlx", .kv_quant = "8", .kv_attn_mode = .auto, .decode_attn_quant = true, .prefill_chunk = 8192, .mtp_loaded = false, .mtp_default_on = false, .mtp_acceptance = .exact, .mtp_depth = 0, .mtp_adaptive = true, .max_mtp_ctx = 0, .drafter = "assistant", .pld = .{ .enable = true, .draft_len = 5, .key_len = 3 }, .max_concurrent = 4, .prefix_cache_mem_bytes = 2048, .prefix_cache_disk_bytes = 0, .prefill_decode_share = 0.5 };
 
     const ds4 = embeddedEngineSettings(base, .ds4, true);
     try testing.expectEqualStrings("ds4", ds4.engine);
@@ -20073,13 +20088,16 @@ test "embeddedEngineSettings: an engine-backed model reports only the levers its
     try testing.expect(ds4.mtp_loaded and ds4.mtp_default_on);
     try testing.expectEqualStrings("none", ds4.drafter);
     try testing.expectEqual(@as(usize, 0), ds4.prefill_chunk);
+    try testing.expectEqual(@as(f32, 0), ds4.prefill_decode_share);
 
     const llama = embeddedEngineSettings(base, .llama, false);
     try testing.expectEqualStrings("llama", llama.engine);
     try testing.expectEqualStrings("8", llama.kv_quant);
     try testing.expect(!llama.decode_attn_quant and !llama.pld.enable and !llama.mtp_default_on);
+    try testing.expectEqual(@as(f32, 0), llama.prefill_decode_share);
 
     try testing.expect(embeddedEngineSettings(base, .mlx, false).decode_attn_quant);
+    try testing.expectEqual(@as(f32, 0.5), embeddedEngineSettings(base, .mlx, false).prefill_decode_share);
 }
 
 test "ngramWarmPropsJson: /props names how far the qwen4 ngram warm has got" {
