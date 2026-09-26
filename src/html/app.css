@@ -541,16 +541,22 @@ table.models .state.error { color: #f28b82 }
 #chat-voice.listening { color: #e5534b; background: color-mix(in srgb, #e5534b 18%, transparent) }
 
 /* ── Theme toggle button ─────────────────────────────────────────────────── */
-
-.theme-toggle {
+.theme-toggle,
+/* ── Language switch ────────────────────────────────────────────────────────
+   Same 26×26 footprint as the sidebar toggle, and the language it switches TO
+   is drawn as text — no icon font, and the glyph follows <html lang>, which
+   src/html/i18n.js sets before the body paints. */
+.lang-toggle {
   width: 26px;
   height: 26px;
   border-radius: 7px;
   color: var(--dim);
   position: relative;
+  font-weight: 600;
+  padding: 0;
 }
-.theme-toggle:hover { background: #2a2b2d; color: var(--fg) }
-/* A half-filled circle: the switch, drawn rather than an icon font. */
+.theme-toggle:hover,
+.lang-toggle:hover { background: #2a2b2d; color: var(--fg) }
 .theme-toggle::before {
   content: "";
   position: absolute;
@@ -565,6 +571,9 @@ table.models .state.error { color: #f28b82 }
   background: currentColor;
   border-radius: 0 999px 999px 0;
 }
+
+.lang-toggle::after { content: "中" }
+html[lang^=zh] .lang-toggle::after { content: "EN" }
 
 /* ── Light theme ───────────────────────────────────────────────────────────
  *
