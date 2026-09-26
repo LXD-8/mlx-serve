@@ -1486,7 +1486,7 @@ struct ChatSidebar: View {
                     let displayTitle = ChatSessionTitle.display(title: session.title,
                                                                 agentName: agent?.name)
                     Text(displayTitle == "New Chat" ? L10n.text(displayTitle) : displayTitle)
-                        .font(.app(.subheadline).weight(isSelected ? .semibold : .regular))
+                        .font(.app(.rowTitle, weight: .medium))
                         .lineLimit(1)
                         .foregroundStyle(.primary)
                     if let dot = activity.dot(for: session.id, isSelected: isSelected) {
@@ -1604,7 +1604,7 @@ struct ChatSidebar: View {
                     .foregroundStyle(terminalTint(t.phase))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n.text(t.displayName))
-                        .font(.app(.subheadline).weight(isSelected ? .semibold : .regular))
+                        .font(.app(.rowTitle, weight: .medium))
                         .lineLimit(1)
                         .foregroundStyle(.primary)
                     Text((t.workspace as NSString).lastPathComponent)
